@@ -47,7 +47,7 @@ features:
 
   advance only after length and Orwell-rule scoring pass
   # quality gate
-  score >= 7/10 via gpt-5.5
+  score >= 5/10 via gpt-5.5
 
   inspect the active book without opening the editor
   # st|sh|ls [-c <book_json>]
@@ -78,7 +78,7 @@ APP_CONFIG_BOOTSTRAP = """{
     "enabled": true,
     "provider": "openai",
     "model": "gpt-5.5",
-    "threshold": 7,
+    "threshold": 5,
     "rules": "orwell_6"
   }
 }
@@ -94,7 +94,7 @@ BOOK_CONFIG_BOOTSTRAP = """{
       "enabled": true,
       "provider": "openai",
       "model": "gpt-5.5",
-      "threshold": 7,
+      "threshold": 5,
       "rules": "orwell_6"
     }
   },
@@ -141,7 +141,7 @@ def app_defaults() -> dict[str, Any]:
             "enabled": True,
             "provider": "openai",
             "model": "gpt-5.5",
-            "threshold": 7,
+            "threshold": 5,
             "rules": "orwell_6",
         },
     }
@@ -322,7 +322,7 @@ def quality_gate(book_config: dict[str, Any]) -> dict[str, Any]:
         "enabled": True,
         "provider": "openai",
         "model": "gpt-5.5",
-        "threshold": 7,
+        "threshold": 5,
         "rules": "orwell_6",
     }
     gate.update(raw)
@@ -371,7 +371,7 @@ def item_complete(item: WorkItem, book_config_path: Path, book_config: dict[str,
     return (
         state.get("body_hash") == body_hash(item.path)
         and bool(state.get("pass"))
-        and int(state.get("score", 0)) >= int(quality_gate(book_config).get("threshold", 7))
+        and int(state.get("score", 0)) >= int(quality_gate(book_config).get("threshold", 5))
     )
 
 
@@ -499,7 +499,7 @@ def extract_response_text(payload: dict[str, Any]) -> str:
 def score_with_openai(item: WorkItem, book_config: dict[str, Any]) -> dict[str, Any]:
     gate = quality_gate(book_config)
     model = str(gate.get("model") or "gpt-5.5")
-    threshold = int(gate.get("threshold", 7))
+    threshold = int(gate.get("threshold", 5))
     body = draft_body(item.path)
     api_key = openai_api_key_from_bashrc()
 

@@ -9,7 +9,7 @@ writing material.
 By default, a proposition advances only after:
 
 1. The draft body reaches the configured minimum character count.
-2. The OpenAI quality gate scores that exact draft at least `7/10` against
+2. The OpenAI quality gate scores that exact draft at least `5/10` against
    George Orwell's six rules.
 
 ## Install
@@ -106,7 +106,7 @@ The app config stores generic defaults only:
     "enabled": true,
     "provider": "openai",
     "model": "gpt-5.5",
-    "threshold": 7,
+    "threshold": 5,
     "rules": "orwell_6"
   }
 }
