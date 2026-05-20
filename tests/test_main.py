@@ -108,6 +108,10 @@ class MainTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0)
             self.assertTrue(draft.exists())
+            text = draft.read_text(encoding="utf-8")
+            self.assertIn("textwidth=79", text)
+            self.assertIn("colorcolumn=79", text)
+            self.assertIn("done 1/1", result.stdout)
             self.assertIn("done", result.stdout)
 
 

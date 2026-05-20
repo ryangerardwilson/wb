@@ -22,6 +22,7 @@ from rgw_cli_contract import AppSpec, resolve_install_script_path, run_app
 APP_NAME = "wb"
 DEFAULT_BOOK_CONFIG_NAME = "wb.json"
 DRAFT_MARKER = "<!-- wb:draft:start -->"
+VIM_WRAP_MODELINE = "<!-- vim: setlocal textwidth=79 colorcolumn=79 wrap linebreak formatoptions+=t: -->"
 
 HELP_TEXT = """Writer's Block
 write long work one proposition at a time
@@ -292,7 +293,9 @@ def draft_body(path: Path) -> str:
     content = path.read_text(encoding="utf-8")
     if DRAFT_MARKER not in content:
         return content.strip()
-    return content.split(DRAFT_MARKER, 1)[1].strip()
+    body = content.split(DRAFT_MARKER, 1)[1]
+    body = body.replace(VIM_WRAP_MODELINE, "")
+    return body.strip()
 
 
 def char_count(path: Path) -> int:
@@ -378,6 +381,8 @@ def ensure_draft(item: WorkItem, total_props: int) -> None:
     )
     content = f"""# {item.chapter_title}
 
+{VIM_WRAP_MODELINE}
+
 Proposition {item.proposition_index} of {total_props}
 
 ## Proposition
@@ -412,7 +417,14 @@ def resolve_editor_command() -> list[str]:
 
 
 def open_editor(path: Path) -> int:
-    return subprocess.run([*resolve_editor_command(), str(path)], check=False).returncode
+    command = resolve_editor_command()
+    executable = Path(command[0]).name
+    if executable in {"vim", "nvim", "vi"}:
+        command = [
+            *command,
+            "+setlocal textwidth=79 colorcolumn=79 wrap linebreak formatoptions+=t",
+        ]
+    return subprocess.run([*command, str(path)], check=False).returncode
 
 
 def openai_api_key_from_bashrc() -> str:
