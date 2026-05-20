@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -11,6 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WB = ROOT / "wb"
+sys.path.insert(0, str(ROOT))
+import main as wb_main
 
 
 def run_wb(*args: str, cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -120,6 +125,40 @@ class MainTests(unittest.TestCase):
             self.assertEqual(long_lines, [])
             self.assertIn("done 1/1", result.stdout)
             self.assertIn("done", result.stdout)
+
+    def test_openai_transport_errors_are_reported_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            draft = Path(tmp) / "draft.md"
+            draft.write_text(
+                f"{wb_main.DRAFT_MARKER}\nplain draft body\n",
+                encoding="utf-8",
+            )
+            item = wb_main.WorkItem(
+                chapter_index=0,
+                proposition_index=1,
+                chapter_title="One",
+                proposition="Argue one thing.",
+                path=draft,
+                min_chars=1,
+            )
+
+            original_key = wb_main.openai_api_key_from_bashrc
+            original_urlopen = wb_main.urllib.request.urlopen
+            wb_main.openai_api_key_from_bashrc = lambda: "test-key"
+            wb_main.urllib.request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(
+                LookupError("unknown encoding: idna")
+            )
+            stderr = io.StringIO()
+            try:
+                with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(stderr):
+                    wb_main.score_with_openai(item, {"settings": {"quality_gate": {"threshold": 5}}})
+            finally:
+                wb_main.openai_api_key_from_bashrc = original_key
+                wb_main.urllib.request.urlopen = original_urlopen
+
+            self.assertEqual(raised.exception.code, 1)
+            self.assertIn("OpenAI scoring failed: unknown encoding: idna", stderr.getvalue())
+            self.assertIn("encodings.idna", sys.modules)
 
 
 if __name__ == "__main__":

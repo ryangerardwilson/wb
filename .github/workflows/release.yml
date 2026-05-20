@@ -64,6 +64,7 @@ jobs:
               sed -i -E "s/^__version__ = \".*\"/__version__ = \"${VERSION}\"/" _version.py
 
               "$PYBIN" -m PyInstaller --clean --onedir --name wb \
+                --hidden-import encodings.idna \
                 main.py
               cp install.sh dist/wb/
 

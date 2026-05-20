@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import hashlib
+import encodings.idna  # Force PyInstaller to bundle HTTPS hostname encoding.
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -568,6 +569,8 @@ def score_with_openai(item: WorkItem, book_config: dict[str, Any]) -> dict[str, 
         die(f"OpenAI scoring failed: HTTP {exc.code}: {detail[:500]}", code=1)
     except urllib.error.URLError as exc:
         die(f"OpenAI scoring failed: {exc.reason}", code=1)
+    except Exception as exc:
+        die(f"OpenAI scoring failed: {exc}", code=1)
 
     response_payload = json.loads(raw)
     text = extract_response_text(response_payload)
