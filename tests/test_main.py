@@ -109,8 +109,9 @@ class MainTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertTrue(draft.exists())
             text = draft.read_text(encoding="utf-8")
-            self.assertIn("tw=79", text)
-            self.assertIn("cc=79", text)
+            self.assertIn("vim wraps prose at 79 columns", text)
+            self.assertNotIn("setlocal tw=79", text)
+            self.assertNotIn("textwidth=79", text)
             long_lines = [
                 (number, len(line), line)
                 for number, line in enumerate(text.splitlines(), start=1)

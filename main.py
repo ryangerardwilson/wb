@@ -22,7 +22,8 @@ from rgw_cli_contract import AppSpec, resolve_install_script_path, run_app
 APP_NAME = "wb"
 DEFAULT_BOOK_CONFIG_NAME = "wb.json"
 DRAFT_MARKER = "<!-- wb:draft:start -->"
-VIM_WRAP_MODELINE = "<!-- vim: setlocal tw=79 cc=79 wrap lbr fo+=t: -->"
+VIM_WRAP_MODELINE = "<!-- wb: vim wraps prose at 79 columns -->"
+SHORT_VIM_WRAP_MODELINE = "<!-- vim: setlocal tw=79 cc=79 wrap lbr fo+=t: -->"
 OLD_VIM_WRAP_MODELINE = "<!-- vim: setlocal textwidth=79 colorcolumn=79 wrap linebreak formatoptions+=t: -->"
 SCAFFOLD_WIDTH = 79
 
@@ -297,6 +298,7 @@ def draft_body(path: Path) -> str:
         return content.strip()
     body = content.split(DRAFT_MARKER, 1)[1]
     body = body.replace(VIM_WRAP_MODELINE, "")
+    body = body.replace(SHORT_VIM_WRAP_MODELINE, "")
     body = body.replace(OLD_VIM_WRAP_MODELINE, "")
     return body.strip()
 
@@ -413,6 +415,7 @@ def normalize_draft_scaffold(item: WorkItem, total_props: int) -> None:
         return
     body = content.split(DRAFT_MARKER, 1)[1]
     body = body.replace(VIM_WRAP_MODELINE, "")
+    body = body.replace(SHORT_VIM_WRAP_MODELINE, "")
     body = body.replace(OLD_VIM_WRAP_MODELINE, "")
     body = body.lstrip("\n")
     item.path.write_text(draft_scaffold(item, total_props) + body, encoding="utf-8")
