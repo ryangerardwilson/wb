@@ -22,7 +22,9 @@ from rgw_cli_contract import AppSpec, resolve_install_script_path, run_app
 APP_NAME = "wb"
 DEFAULT_BOOK_CONFIG_NAME = "wb.json"
 DRAFT_MARKER = "<!-- wb:draft:start -->"
-VIM_WRAP_MODELINE = "<!-- vim: setlocal textwidth=79 colorcolumn=79 wrap linebreak formatoptions+=t: -->"
+VIM_WRAP_MODELINE = "<!-- vim: setlocal tw=79 cc=79 wrap lbr fo+=t: -->"
+OLD_VIM_WRAP_MODELINE = "<!-- vim: setlocal textwidth=79 colorcolumn=79 wrap linebreak formatoptions+=t: -->"
+SCAFFOLD_WIDTH = 79
 
 HELP_TEXT = """Writer's Block
 write long work one proposition at a time
@@ -295,6 +297,7 @@ def draft_body(path: Path) -> str:
         return content.strip()
     body = content.split(DRAFT_MARKER, 1)[1]
     body = body.replace(VIM_WRAP_MODELINE, "")
+    body = body.replace(OLD_VIM_WRAP_MODELINE, "")
     return body.strip()
 
 
@@ -370,16 +373,20 @@ def item_complete(item: WorkItem, book_config_path: Path, book_config: dict[str,
     )
 
 
-def ensure_draft(item: WorkItem, total_props: int) -> None:
-    if item.path.exists():
-        return
-
-    item.path.parent.mkdir(parents=True, exist_ok=True)
+def draft_scaffold(item: WorkItem, total_props: int) -> str:
     wrapped = "\n".join(
         f"> {line}" if line else ">"
-        for line in textwrap.wrap(item.proposition, width=88)
+        for line in textwrap.wrap(item.proposition, width=SCAFFOLD_WIDTH - 2)
     )
-    content = f"""# {item.chapter_title}
+    instructions = "\n".join(
+        textwrap.wrap(
+            "Write below this marker. The proposition text above is scaffolding "
+            "and does not count.",
+            width=SCAFFOLD_WIDTH,
+        )
+    )
+    char_label = "character" if item.min_chars == 1 else "characters"
+    return f"""# {item.chapter_title}
 
 {VIM_WRAP_MODELINE}
 
@@ -391,11 +398,33 @@ Proposition {item.proposition_index} of {total_props}
 
 ## Draft
 
-Write below this marker. The proposition text above is scaffolding and does not count.
-Completion requires at least {item.min_chars} characters below the marker.
+{instructions}
+Completion requires at least {item.min_chars} {char_label} below the marker.
 
 {DRAFT_MARKER}
 """
+
+
+def normalize_draft_scaffold(item: WorkItem, total_props: int) -> None:
+    if not item.path.exists():
+        return
+    content = item.path.read_text(encoding="utf-8")
+    if DRAFT_MARKER not in content:
+        return
+    body = content.split(DRAFT_MARKER, 1)[1]
+    body = body.replace(VIM_WRAP_MODELINE, "")
+    body = body.replace(OLD_VIM_WRAP_MODELINE, "")
+    body = body.lstrip("\n")
+    item.path.write_text(draft_scaffold(item, total_props) + body, encoding="utf-8")
+
+
+def ensure_draft(item: WorkItem, total_props: int) -> None:
+    if item.path.exists():
+        normalize_draft_scaffold(item, total_props)
+        return
+
+    item.path.parent.mkdir(parents=True, exist_ok=True)
+    content = draft_scaffold(item, total_props)
     item.path.write_text(content, encoding="utf-8")
 
 

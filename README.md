@@ -122,8 +122,9 @@ Editor resolution follows the workspace contract:
 2. `$EDITOR`
 3. `vim`
 
-Draft Markdown files include a Vim modeline and Vim/Neovim launches get the
-same setting directly: prose wraps at `79` characters with a `79` column marker.
+Draft Markdown files include a short Vim modeline and Vim/Neovim launches get
+the same setting directly: prose wraps at `79` characters with a `79` column
+marker.
 
 The OpenAI API key is read by sourcing `~/.bashrc` and reading
 `OPENAI_API_KEY`. The key is never written to the app repo or printed by `wb`.
