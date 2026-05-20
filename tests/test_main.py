@@ -160,6 +160,108 @@ class MainTests(unittest.TestCase):
             self.assertIn("OpenAI scoring failed: unknown encoding: idna", stderr.getvalue())
             self.assertIn("encodings.idna", sys.modules)
 
+    def test_replace_draft_body_preserves_scaffold_and_wraps_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            draft = Path(tmp) / "draft.md"
+            draft.write_text(
+                textwrap.dedent(
+                    f"""\
+                    # One
+
+                    ## Draft
+
+                    {wb_main.DRAFT_MARKER}
+                    old body
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            wb_main.replace_draft_body(
+                draft,
+                "This is a long replacement sentence that should be wrapped before it "
+                "is written back into the Markdown draft so the file remains easy to "
+                "read in Vim.",
+            )
+            text = draft.read_text(encoding="utf-8")
+            body = wb_main.draft_body(draft)
+
+        self.assertIn("# One", text)
+        self.assertIn("replacement sentence", body)
+        self.assertNotIn("old body", body)
+        self.assertEqual(
+            [(i, len(line)) for i, line in enumerate(text.splitlines(), start=1) if len(line) > 79],
+            [],
+        )
+
+    def test_failed_gate_can_rewrite_reopen_and_rescore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            config = cwd / "book.json"
+            config.write_text(
+                textwrap.dedent(
+                    """\
+                    {
+                      "title": "Small",
+                      "settings": {
+                        "draft_dir": "drafts",
+                        "min_chars": 1,
+                        "quality_gate": {"enabled": true, "threshold": 5}
+                      },
+                      "chapters": [
+                        {"title": "One", "propositions": ["Argue one thing."]}
+                      ]
+                    }
+                    """
+                ),
+                encoding="utf-8",
+            )
+            opens: list[Path] = []
+            prompts: list[str] = []
+            scores = [
+                {"score": 4, "pass": False, "reasons": ["too wordy"], "revision_targets": ["cut"]},
+                {"score": 6, "pass": True, "reasons": [], "revision_targets": []},
+            ]
+
+            def fake_editor(path: Path) -> int:
+                opens.append(path)
+                if len(opens) == 1:
+                    path.write_text(
+                        path.read_text(encoding="utf-8") + "\nfirst body",
+                        encoding="utf-8",
+                    )
+                return 0
+
+            original_editor = wb_main.open_editor
+            original_ask = wb_main.ask_yes_no
+            original_score = wb_main.score_with_openai
+            original_rewrite = wb_main.rewrite_with_openai
+            wb_main.open_editor = fake_editor
+            wb_main.ask_yes_no = lambda prompt: prompts.append(prompt) or True
+            wb_main.score_with_openai = lambda item, book_config: scores.pop(0)
+            wb_main.rewrite_with_openai = (
+                lambda item, book_config, score: "plain rewritten body"
+            )
+            stdout = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(stdout):
+                    result = wb_main.command_write(config, ["-1"])
+            finally:
+                wb_main.open_editor = original_editor
+                wb_main.ask_yes_no = original_ask
+                wb_main.score_with_openai = original_score
+                wb_main.rewrite_with_openai = original_rewrite
+
+            draft = cwd / "drafts" / "00-one" / "01.md"
+            body = wb_main.draft_body(draft)
+            output = stdout.getvalue()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(opens), 2)
+        self.assertIn("rewrite  : use AI to rewrite", prompts[0])
+        self.assertIn("plain rewritten body", body)
+        self.assertIn("open     : review the rewrite", output)
+
 
 if __name__ == "__main__":
     unittest.main()

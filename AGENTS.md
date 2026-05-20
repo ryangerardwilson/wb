@@ -19,6 +19,7 @@
 - The app config may contain generic defaults only, such as the default book config filename, draft directory, extension, minimum character threshold, and generic quality-gate settings.
 - Do not put book-specific planning in the XDG app config unless the user explicitly asks for a machine-local personal setup.
 - The default quality gate uses OpenAI `gpt-5.5` to score draft bodies against George Orwell's six prose rules.
+- If the quality gate fails in an interactive terminal, `wb` may ask whether to use OpenAI to rewrite the draft in Orwell's plain style, then reopen the draft in the editor for human edits.
 - The OpenAI API key must be read by sourcing `~/.bashrc` and reading `OPENAI_API_KEY`; never commit, print, or log plaintext key material.
 
 ## Command Shape

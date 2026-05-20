@@ -12,6 +12,10 @@ By default, a proposition advances only after:
 2. The OpenAI quality gate scores that exact draft at least `5/10` against
    George Orwell's six rules.
 
+If the gate fails, `wb` explains why. In an interactive terminal it then asks
+whether OpenAI should rewrite the draft in Orwell's plain style and reopen Vim
+for manual edits.
+
 ## Install
 
 ```bash

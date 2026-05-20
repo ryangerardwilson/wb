@@ -497,12 +497,51 @@ def extract_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def openai_json_request(request_payload: dict[str, Any], label: str) -> dict[str, Any]:
+    api_key = openai_api_key_from_bashrc()
+    data = json.dumps(request_payload).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        die(f"{label} failed: HTTP {exc.code}: {detail[:500]}", code=1)
+    except urllib.error.URLError as exc:
+        die(f"{label} failed: {exc.reason}", code=1)
+    except Exception as exc:
+        die(f"{label} failed: {exc}", code=1)
+
+    try:
+        response_payload = json.loads(raw)
+    except json.JSONDecodeError:
+        die(f"{label} returned invalid response JSON", code=1)
+
+    text = extract_response_text(response_payload)
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        die(f"{label} returned invalid JSON", code=1)
+
+    if not isinstance(result, dict):
+        die(f"{label} returned the wrong shape", code=1)
+    return result
+
+
 def score_with_openai(item: WorkItem, book_config: dict[str, Any]) -> dict[str, Any]:
     gate = quality_gate(book_config)
     model = str(gate.get("model") or "gpt-5.5")
     threshold = int(gate.get("threshold", 5))
     body = draft_body(item.path)
-    api_key = openai_api_key_from_bashrc()
 
     schema = {
         "type": "object",
@@ -550,43 +589,93 @@ def score_with_openai(item: WorkItem, book_config: dict[str, Any]) -> dict[str, 
         "max_output_tokens": 800,
         "store": False,
     }
-    data = json.dumps(request_payload).encode("utf-8")
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        die(f"OpenAI scoring failed: HTTP {exc.code}: {detail[:500]}", code=1)
-    except urllib.error.URLError as exc:
-        die(f"OpenAI scoring failed: {exc.reason}", code=1)
-    except Exception as exc:
-        die(f"OpenAI scoring failed: {exc}", code=1)
-
-    response_payload = json.loads(raw)
-    text = extract_response_text(response_payload)
-    try:
-        score = json.loads(text)
-    except json.JSONDecodeError:
-        die("OpenAI scoring returned invalid JSON", code=1)
-
-    if not isinstance(score, dict):
-        die("OpenAI scoring returned the wrong shape", code=1)
+    score = openai_json_request(request_payload, "OpenAI scoring")
     score_value = int(score.get("score", 0))
     score["score"] = max(0, min(10, score_value))
     score["pass"] = bool(score.get("pass")) and score["score"] >= threshold
     score["threshold"] = threshold
     score["model"] = model
     return score
+
+
+def wrap_body_text(text: str) -> str:
+    paragraphs = re.split(r"\n\s*\n", text.strip())
+    wrapped: list[str] = []
+    for paragraph in paragraphs:
+        lines = [line.strip() for line in paragraph.splitlines()]
+        joined = " ".join(line for line in lines if line)
+        if joined:
+            wrapped.append(textwrap.fill(joined, width=SCAFFOLD_WIDTH))
+    return "\n\n".join(wrapped).strip()
+
+
+def replace_draft_body(path: Path, body: str) -> None:
+    content = path.read_text(encoding="utf-8") if path.exists() else ""
+    if DRAFT_MARKER in content:
+        prefix = content.split(DRAFT_MARKER, 1)[0] + DRAFT_MARKER + "\n"
+    else:
+        prefix = f"{DRAFT_MARKER}\n"
+    wrapped = wrap_body_text(body)
+    path.write_text(prefix + wrapped + "\n", encoding="utf-8")
+
+
+def rewrite_with_openai(
+    item: WorkItem,
+    book_config: dict[str, Any],
+    score: dict[str, Any],
+) -> str:
+    gate = quality_gate(book_config)
+    model = str(gate.get("model") or "gpt-5.5")
+    body = draft_body(item.path)
+    reasons = score.get("reasons", [])
+    fixes = score.get("revision_targets", [])
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "draft": {"type": "string"},
+        },
+        "required": ["draft"],
+    }
+    system = (
+        "Rewrite the submitted draft body in George Orwell's plain, direct style. "
+        "Use short words where they work. Cut waste. Prefer active voice. Avoid stale figures "
+        "of speech, jargon, and ornate phrasing. Preserve the core claim and force of the draft. "
+        "Do not add new facts. Return JSON only."
+    )
+    user = (
+        f"Chapter: {item.chapter_title}\n"
+        f"Proposition: {item.proposition}\n\n"
+        f"Score: {score.get('score')}/10\n"
+        f"Reasons: {json.dumps(reasons, ensure_ascii=True)}\n"
+        f"Fixes: {json.dumps(fixes, ensure_ascii=True)}\n\n"
+        "Draft body:\n"
+        f"{body}"
+    )
+    request_payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user}]},
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "orwell_rewrite",
+                "schema": schema,
+                "strict": True,
+            }
+        },
+        "reasoning": {"effort": "low"},
+        "max_output_tokens": 1800,
+        "store": False,
+    }
+    result = openai_json_request(request_payload, "OpenAI rewrite")
+    draft = result.get("draft")
+    if not isinstance(draft, str) or not draft.strip():
+        die("OpenAI rewrite returned an empty draft", code=1)
+    return draft
 
 
 def print_score(score: dict[str, Any]) -> None:
@@ -608,16 +697,37 @@ def run_quality_gate(
     item: WorkItem,
     book_config_path: Path,
     book_config: dict[str, Any],
-) -> bool:
+) -> dict[str, Any]:
     if not gate_enabled(book_config):
-        return True
+        return {"pass": True}
 
     print("scoring  : Orwell gate via OpenAI")
     score = score_with_openai(item, book_config)
     score["body_hash"] = body_hash(item.path)
     write_state(item, book_config_path, book_config, score)
     print_score(score)
-    return bool(score.get("pass"))
+    return score
+
+
+def ask_yes_no(prompt: str) -> bool:
+    if not sys.stdin.isatty():
+        return False
+    try:
+        answer = input(f"{prompt} [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return answer in {"y", "yes"}
+
+
+def offer_ai_rewrite(item: WorkItem, book_config: dict[str, Any], score: dict[str, Any]) -> bool:
+    if not ask_yes_no("rewrite  : use AI to rewrite this in George Orwell's style?"):
+        return False
+
+    print("rewrite  : OpenAI draft")
+    rewritten = rewrite_with_openai(item, book_config, score)
+    replace_draft_body(item.path, rewritten)
+    print("open     : review the rewrite")
+    return open_editor(item.path) == 0
 
 
 def command_write(book_config_path: Path, args: list[str]) -> int:
@@ -657,9 +767,19 @@ def command_write(book_config_path: Path, args: list[str]) -> int:
             print(f"incomplete {current}/{item.min_chars}; need {item.min_chars - current} more")
             return 1
 
-        if not run_quality_gate(item, book_config_path, book_config):
-            print("blocked  : revise this proposition before moving on")
-            return 1
+        while True:
+            score = run_quality_gate(item, book_config_path, book_config)
+            if score.get("pass"):
+                break
+
+            if not offer_ai_rewrite(item, book_config, score):
+                print("blocked  : revise this proposition before moving on")
+                return 1
+
+            current = char_count(item.path)
+            if current < item.min_chars:
+                print(f"incomplete {current}/{item.min_chars}; need {item.min_chars - current} more")
+                return 1
 
         print(f"done {current}/{item.min_chars}")
         if once:
