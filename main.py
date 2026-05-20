@@ -48,7 +48,7 @@ features:
 
   advance only after length and Orwell-rule scoring pass
   # quality gate
-  score >= 5/10 via gpt-5.5
+  score >= 3/10 via gpt-5.5
 
   inspect the active book without opening the editor
   # st|sh|ls [-c <book_json>]
@@ -79,7 +79,7 @@ APP_CONFIG_BOOTSTRAP = """{
     "enabled": true,
     "provider": "openai",
     "model": "gpt-5.5",
-    "threshold": 5,
+    "threshold": 3,
     "rules": "orwell_6"
   }
 }
@@ -95,7 +95,7 @@ BOOK_CONFIG_BOOTSTRAP = """{
       "enabled": true,
       "provider": "openai",
       "model": "gpt-5.5",
-      "threshold": 5,
+      "threshold": 3,
       "rules": "orwell_6"
     }
   },
@@ -142,7 +142,7 @@ def app_defaults() -> dict[str, Any]:
             "enabled": True,
             "provider": "openai",
             "model": "gpt-5.5",
-            "threshold": 5,
+            "threshold": 3,
             "rules": "orwell_6",
         },
     }
@@ -323,7 +323,7 @@ def quality_gate(book_config: dict[str, Any]) -> dict[str, Any]:
         "enabled": True,
         "provider": "openai",
         "model": "gpt-5.5",
-        "threshold": 5,
+        "threshold": 3,
         "rules": "orwell_6",
     }
     gate.update(raw)
@@ -371,8 +371,7 @@ def item_complete(item: WorkItem, book_config_path: Path, book_config: dict[str,
     state = read_state(item, book_config_path, book_config)
     return (
         state.get("body_hash") == body_hash(item.path)
-        and bool(state.get("pass"))
-        and int(state.get("score", 0)) >= int(quality_gate(book_config).get("threshold", 5))
+        and int(state.get("score", 0)) >= int(quality_gate(book_config).get("threshold", 3))
     )
 
 
@@ -540,7 +539,7 @@ def openai_json_request(request_payload: dict[str, Any], label: str) -> dict[str
 def score_with_openai(item: WorkItem, book_config: dict[str, Any]) -> dict[str, Any]:
     gate = quality_gate(book_config)
     model = str(gate.get("model") or "gpt-5.5")
-    threshold = int(gate.get("threshold", 5))
+    threshold = int(gate.get("threshold", 3))
     body = draft_body(item.path)
 
     schema = {
@@ -592,90 +591,10 @@ def score_with_openai(item: WorkItem, book_config: dict[str, Any]) -> dict[str, 
     score = openai_json_request(request_payload, "OpenAI scoring")
     score_value = int(score.get("score", 0))
     score["score"] = max(0, min(10, score_value))
-    score["pass"] = bool(score.get("pass")) and score["score"] >= threshold
+    score["pass"] = score["score"] >= threshold
     score["threshold"] = threshold
     score["model"] = model
     return score
-
-
-def wrap_body_text(text: str) -> str:
-    paragraphs = re.split(r"\n\s*\n", text.strip())
-    wrapped: list[str] = []
-    for paragraph in paragraphs:
-        lines = [line.strip() for line in paragraph.splitlines()]
-        joined = " ".join(line for line in lines if line)
-        if joined:
-            wrapped.append(textwrap.fill(joined, width=SCAFFOLD_WIDTH))
-    return "\n\n".join(wrapped).strip()
-
-
-def replace_draft_body(path: Path, body: str) -> None:
-    content = path.read_text(encoding="utf-8") if path.exists() else ""
-    if DRAFT_MARKER in content:
-        prefix = content.split(DRAFT_MARKER, 1)[0] + DRAFT_MARKER + "\n"
-    else:
-        prefix = f"{DRAFT_MARKER}\n"
-    wrapped = wrap_body_text(body)
-    path.write_text(prefix + wrapped + "\n", encoding="utf-8")
-
-
-def rewrite_with_openai(
-    item: WorkItem,
-    book_config: dict[str, Any],
-    score: dict[str, Any],
-) -> str:
-    gate = quality_gate(book_config)
-    model = str(gate.get("model") or "gpt-5.5")
-    body = draft_body(item.path)
-    reasons = score.get("reasons", [])
-    fixes = score.get("revision_targets", [])
-
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "draft": {"type": "string"},
-        },
-        "required": ["draft"],
-    }
-    system = (
-        "Rewrite the submitted draft body in George Orwell's plain, direct style. "
-        "Use short words where they work. Cut waste. Prefer active voice. Avoid stale figures "
-        "of speech, jargon, and ornate phrasing. Preserve the core claim and force of the draft. "
-        "Do not add new facts. Return JSON only."
-    )
-    user = (
-        f"Chapter: {item.chapter_title}\n"
-        f"Proposition: {item.proposition}\n\n"
-        f"Score: {score.get('score')}/10\n"
-        f"Reasons: {json.dumps(reasons, ensure_ascii=True)}\n"
-        f"Fixes: {json.dumps(fixes, ensure_ascii=True)}\n\n"
-        "Draft body:\n"
-        f"{body}"
-    )
-    request_payload = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": system}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user}]},
-        ],
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "orwell_rewrite",
-                "schema": schema,
-                "strict": True,
-            }
-        },
-        "reasoning": {"effort": "low"},
-        "max_output_tokens": 1800,
-        "store": False,
-    }
-    result = openai_json_request(request_payload, "OpenAI rewrite")
-    draft = result.get("draft")
-    if not isinstance(draft, str) or not draft.strip():
-        die("OpenAI rewrite returned an empty draft", code=1)
-    return draft
 
 
 def print_score(score: dict[str, Any]) -> None:
@@ -707,27 +626,6 @@ def run_quality_gate(
     write_state(item, book_config_path, book_config, score)
     print_score(score)
     return score
-
-
-def ask_yes_no(prompt: str) -> bool:
-    if not sys.stdin.isatty():
-        return False
-    try:
-        answer = input(f"{prompt} [y/N] ").strip().lower()
-    except EOFError:
-        return False
-    return answer in {"y", "yes"}
-
-
-def offer_ai_rewrite(item: WorkItem, book_config: dict[str, Any], score: dict[str, Any]) -> bool:
-    if not ask_yes_no("rewrite  : use AI to rewrite this in George Orwell's style?"):
-        return False
-
-    print("rewrite  : OpenAI draft")
-    rewritten = rewrite_with_openai(item, book_config, score)
-    replace_draft_body(item.path, rewritten)
-    print("open     : review the rewrite")
-    return open_editor(item.path) == 0
 
 
 def command_write(book_config_path: Path, args: list[str]) -> int:
@@ -767,19 +665,10 @@ def command_write(book_config_path: Path, args: list[str]) -> int:
             print(f"incomplete {current}/{item.min_chars}; need {item.min_chars - current} more")
             return 1
 
-        while True:
-            score = run_quality_gate(item, book_config_path, book_config)
-            if score.get("pass"):
-                break
-
-            if not offer_ai_rewrite(item, book_config, score):
-                print("blocked  : revise this proposition before moving on")
-                return 1
-
-            current = char_count(item.path)
-            if current < item.min_chars:
-                print(f"incomplete {current}/{item.min_chars}; need {item.min_chars - current} more")
-                return 1
+        score = run_quality_gate(item, book_config_path, book_config)
+        if not score.get("pass"):
+            print("blocked  : revise this proposition before moving on")
+            return 1
 
         print(f"done {current}/{item.min_chars}")
         if once:

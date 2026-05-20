@@ -62,6 +62,7 @@ class MainTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(config["book_config"], "wb.json")
             self.assertEqual(config["min_chars"], 500)
+            self.assertEqual(config["quality_gate"]["threshold"], 3)
 
     def test_init_and_status_use_cwd_book_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -151,7 +152,7 @@ class MainTests(unittest.TestCase):
             stderr = io.StringIO()
             try:
                 with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(stderr):
-                    wb_main.score_with_openai(item, {"settings": {"quality_gate": {"threshold": 5}}})
+                    wb_main.score_with_openai(item, {"settings": {"quality_gate": {"threshold": 3}}})
             finally:
                 wb_main.openai_api_key_from_bashrc = original_key
                 wb_main.urllib.request.urlopen = original_urlopen
@@ -160,41 +161,43 @@ class MainTests(unittest.TestCase):
             self.assertIn("OpenAI scoring failed: unknown encoding: idna", stderr.getvalue())
             self.assertIn("encodings.idna", sys.modules)
 
-    def test_replace_draft_body_preserves_scaffold_and_wraps_body(self) -> None:
+    def test_score_pass_uses_numeric_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             draft = Path(tmp) / "draft.md"
             draft.write_text(
-                textwrap.dedent(
-                    f"""\
-                    # One
-
-                    ## Draft
-
-                    {wb_main.DRAFT_MARKER}
-                    old body
-                    """
-                ),
+                f"{wb_main.DRAFT_MARKER}\nplain draft body\n",
                 encoding="utf-8",
             )
-
-            wb_main.replace_draft_body(
-                draft,
-                "This is a long replacement sentence that should be wrapped before it "
-                "is written back into the Markdown draft so the file remains easy to "
-                "read in Vim.",
+            item = wb_main.WorkItem(
+                chapter_index=0,
+                proposition_index=1,
+                chapter_title="One",
+                proposition="Argue one thing.",
+                path=draft,
+                min_chars=1,
             )
-            text = draft.read_text(encoding="utf-8")
-            body = wb_main.draft_body(draft)
 
-        self.assertIn("# One", text)
-        self.assertIn("replacement sentence", body)
-        self.assertNotIn("old body", body)
-        self.assertEqual(
-            [(i, len(line)) for i, line in enumerate(text.splitlines(), start=1) if len(line) > 79],
-            [],
-        )
+            original_request = wb_main.openai_json_request
+            wb_main.openai_json_request = (
+                lambda payload, label: {
+                    "score": 4,
+                    "pass": False,
+                    "reasons": [],
+                    "revision_targets": [],
+                }
+            )
+            try:
+                score = wb_main.score_with_openai(
+                    item,
+                    {"settings": {"quality_gate": {"threshold": 3}}},
+                )
+            finally:
+                wb_main.openai_json_request = original_request
 
-    def test_failed_gate_can_rewrite_reopen_and_rescore(self) -> None:
+        self.assertTrue(score["pass"])
+        self.assertEqual(score["threshold"], 3)
+
+    def test_lowered_threshold_can_complete_existing_score_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
             config = cwd / "book.json"
@@ -206,7 +209,52 @@ class MainTests(unittest.TestCase):
                       "settings": {
                         "draft_dir": "drafts",
                         "min_chars": 1,
-                        "quality_gate": {"enabled": true, "threshold": 5}
+                        "quality_gate": {"enabled": true, "threshold": 3}
+                      },
+                      "chapters": [
+                        {"title": "One", "propositions": ["Argue one thing."]}
+                      ]
+                    }
+                    """
+                ),
+                encoding="utf-8",
+            )
+            book_config = wb_main.load_book_config(config)
+            item = wb_main.work_items(config, book_config)[0]
+            wb_main.ensure_draft(item, 1)
+            item.path.write_text(
+                item.path.read_text(encoding="utf-8") + "\nplain body",
+                encoding="utf-8",
+            )
+            wb_main.write_state(
+                item,
+                config,
+                book_config,
+                {
+                    "body_hash": wb_main.body_hash(item.path),
+                    "pass": False,
+                    "score": 4,
+                    "threshold": 5,
+                },
+            )
+
+            complete = wb_main.item_complete(item, config, book_config)
+
+        self.assertTrue(complete)
+
+    def test_failed_gate_blocks_after_single_editor_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            config = cwd / "book.json"
+            config.write_text(
+                textwrap.dedent(
+                    """\
+                    {
+                      "title": "Small",
+                      "settings": {
+                        "draft_dir": "drafts",
+                        "min_chars": 1,
+                        "quality_gate": {"enabled": true, "threshold": 3}
                       },
                       "chapters": [
                         {"title": "One", "propositions": ["Argue one thing."]}
@@ -217,30 +265,25 @@ class MainTests(unittest.TestCase):
                 encoding="utf-8",
             )
             opens: list[Path] = []
-            prompts: list[str] = []
-            scores = [
-                {"score": 4, "pass": False, "reasons": ["too wordy"], "revision_targets": ["cut"]},
-                {"score": 6, "pass": True, "reasons": [], "revision_targets": []},
-            ]
 
             def fake_editor(path: Path) -> int:
                 opens.append(path)
-                if len(opens) == 1:
-                    path.write_text(
-                        path.read_text(encoding="utf-8") + "\nfirst body",
-                        encoding="utf-8",
-                    )
+                path.write_text(
+                    path.read_text(encoding="utf-8") + "\nfirst body",
+                    encoding="utf-8",
+                )
                 return 0
 
             original_editor = wb_main.open_editor
-            original_ask = wb_main.ask_yes_no
             original_score = wb_main.score_with_openai
-            original_rewrite = wb_main.rewrite_with_openai
             wb_main.open_editor = fake_editor
-            wb_main.ask_yes_no = lambda prompt: prompts.append(prompt) or True
-            wb_main.score_with_openai = lambda item, book_config: scores.pop(0)
-            wb_main.rewrite_with_openai = (
-                lambda item, book_config, score: "plain rewritten body"
+            wb_main.score_with_openai = (
+                lambda item, book_config: {
+                    "score": 2,
+                    "pass": False,
+                    "reasons": ["too wordy"],
+                    "revision_targets": ["cut"],
+                }
             )
             stdout = io.StringIO()
             try:
@@ -248,19 +291,35 @@ class MainTests(unittest.TestCase):
                     result = wb_main.command_write(config, ["-1"])
             finally:
                 wb_main.open_editor = original_editor
-                wb_main.ask_yes_no = original_ask
                 wb_main.score_with_openai = original_score
-                wb_main.rewrite_with_openai = original_rewrite
 
-            draft = cwd / "drafts" / "00-one" / "01.md"
-            body = wb_main.draft_body(draft)
             output = stdout.getvalue()
 
-        self.assertEqual(result, 0)
-        self.assertEqual(len(opens), 2)
-        self.assertIn("rewrite  : use AI to rewrite", prompts[0])
-        self.assertIn("plain rewritten body", body)
-        self.assertIn("open     : review the rewrite", output)
+        self.assertEqual(result, 1)
+        self.assertEqual(len(opens), 1)
+        self.assertIn("blocked  : revise this proposition before moving on", output)
+
+    def test_scaffold_lines_remain_wrapped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            item = wb_main.WorkItem(
+                chapter_index=0,
+                proposition_index=1,
+                chapter_title="One",
+                proposition=(
+                    "This proposition is long enough to require wrapping before it is "
+                    "written into the generated Markdown scaffold."
+                ),
+                path=Path(tmp) / "draft.md",
+                min_chars=1,
+            )
+
+            text = wb_main.draft_scaffold(item, 1)
+
+        self.assertIn("# One", text)
+        self.assertEqual(
+            [(i, len(line)) for i, line in enumerate(text.splitlines(), start=1) if len(line) > 79],
+            [],
+        )
 
 
 if __name__ == "__main__":

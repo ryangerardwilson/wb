@@ -9,12 +9,8 @@ writing material.
 By default, a proposition advances only after:
 
 1. The draft body reaches the configured minimum character count.
-2. The OpenAI quality gate scores that exact draft at least `5/10` against
+2. The OpenAI quality gate scores that exact draft at least `3/10` against
    George Orwell's six rules.
-
-If the gate fails, `wb` explains why. In an interactive terminal it then asks
-whether OpenAI should rewrite the draft in Orwell's plain style and reopen Vim
-for manual edits.
 
 ## Install
 
@@ -110,7 +106,7 @@ The app config stores generic defaults only:
     "enabled": true,
     "provider": "openai",
     "model": "gpt-5.5",
-    "threshold": 5,
+    "threshold": 3,
     "rules": "orwell_6"
   }
 }
