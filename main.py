@@ -8,6 +8,9 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import hashlib
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +41,10 @@ features:
   wb w -1
   wb w -c ./book.json
 
+  advance only after length and Orwell-rule scoring pass
+  # quality gate
+  score >= 7/10 via gpt-5.5
+
   inspect the active book without opening the editor
   # st|sh|ls [-c <book_json>]
   wb st
@@ -62,7 +69,14 @@ APP_CONFIG_BOOTSTRAP = """{
   "book_config": "wb.json",
   "draft_dir": "drafts",
   "extension": "md",
-  "min_chars": 500
+  "min_chars": 500,
+  "quality_gate": {
+    "enabled": true,
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "threshold": 7,
+    "rules": "orwell_6"
+  }
 }
 """
 
@@ -71,7 +85,14 @@ BOOK_CONFIG_BOOTSTRAP = """{
   "settings": {
     "draft_dir": "drafts",
     "min_chars": 500,
-    "extension": "md"
+    "extension": "md",
+    "quality_gate": {
+      "enabled": true,
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "threshold": 7,
+      "rules": "orwell_6"
+    }
   },
   "chapters": [
     {
@@ -112,6 +133,13 @@ def app_defaults() -> dict[str, Any]:
         "draft_dir": "drafts",
         "extension": "md",
         "min_chars": 500,
+        "quality_gate": {
+            "enabled": True,
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "threshold": 7,
+            "rules": "orwell_6",
+        },
     }
 
 
@@ -199,7 +227,13 @@ def book_settings(book_config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         die("book settings must be an object")
     merged = load_app_config()
-    merged.update(raw)
+    for key, value in raw.items():
+        if key == "quality_gate" and isinstance(value, dict):
+            gate = dict(merged.get("quality_gate", {}))
+            gate.update(value)
+            merged["quality_gate"] = gate
+        else:
+            merged[key] = value
     return merged
 
 
@@ -265,6 +299,74 @@ def char_count(path: Path) -> int:
     return len(draft_body(path))
 
 
+def body_hash(path: Path) -> str:
+    return hashlib.sha256(draft_body(path).encode("utf-8")).hexdigest()
+
+
+def quality_gate(book_config: dict[str, Any]) -> dict[str, Any]:
+    raw = book_settings(book_config).get("quality_gate", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        die("quality_gate must be an object")
+
+    gate = {
+        "enabled": True,
+        "provider": "openai",
+        "model": "gpt-5.5",
+        "threshold": 7,
+        "rules": "orwell_6",
+    }
+    gate.update(raw)
+    return gate
+
+
+def gate_enabled(book_config: dict[str, Any]) -> bool:
+    return bool(quality_gate(book_config).get("enabled", True))
+
+
+def state_path(item: WorkItem, book_config_path: Path, book_config: dict[str, Any]) -> Path:
+    root = draft_root(book_config_path, book_config) / ".wb-state"
+    rel = item.path.relative_to(draft_root(book_config_path, book_config))
+    return root / rel.with_suffix(rel.suffix + ".json")
+
+
+def read_state(item: WorkItem, book_config_path: Path, book_config: dict[str, Any]) -> dict[str, Any]:
+    path = state_path(item, book_config_path, book_config)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def write_state(
+    item: WorkItem,
+    book_config_path: Path,
+    book_config: dict[str, Any],
+    state: dict[str, Any],
+) -> None:
+    path = state_path(item, book_config_path, book_config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def item_complete(item: WorkItem, book_config_path: Path, book_config: dict[str, Any]) -> bool:
+    if char_count(item.path) < item.min_chars:
+        return False
+    if not gate_enabled(book_config):
+        return True
+
+    state = read_state(item, book_config_path, book_config)
+    return (
+        state.get("body_hash") == body_hash(item.path)
+        and bool(state.get("pass"))
+        and int(state.get("score", 0)) >= int(quality_gate(book_config).get("threshold", 7))
+    )
+
+
 def ensure_draft(item: WorkItem, total_props: int) -> None:
     if item.path.exists():
         return
@@ -292,9 +394,13 @@ Completion requires at least {item.min_chars} characters below the marker.
     item.path.write_text(content, encoding="utf-8")
 
 
-def next_incomplete(items: list[WorkItem]) -> WorkItem | None:
+def next_incomplete(
+    items: list[WorkItem],
+    book_config_path: Path,
+    book_config: dict[str, Any],
+) -> WorkItem | None:
     for item in items:
-        if char_count(item.path) < item.min_chars:
+        if not item_complete(item, book_config_path, book_config):
             return item
     return None
 
@@ -307,6 +413,164 @@ def resolve_editor_command() -> list[str]:
 
 def open_editor(path: Path) -> int:
     return subprocess.run([*resolve_editor_command(), str(path)], check=False).returncode
+
+
+def openai_api_key_from_bashrc() -> str:
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            'source "$HOME/.bashrc" >/dev/null 2>&1 || true; printf "%s" "${OPENAI_API_KEY:-}"',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    key = result.stdout.strip()
+    if key:
+        return key
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if key:
+        return key
+    die("OPENAI_API_KEY not found after sourcing ~/.bashrc", code=1)
+
+
+def extract_response_text(payload: dict[str, Any]) -> str:
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    parts: list[str] = []
+    for item in payload.get("output", []):
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []):
+            if isinstance(content, dict):
+                text = content.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def score_with_openai(item: WorkItem, book_config: dict[str, Any]) -> dict[str, Any]:
+    gate = quality_gate(book_config)
+    model = str(gate.get("model") or "gpt-5.5")
+    threshold = int(gate.get("threshold", 7))
+    body = draft_body(item.path)
+    api_key = openai_api_key_from_bashrc()
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "score": {"type": "integer"},
+            "pass": {"type": "boolean"},
+            "reasons": {"type": "array", "items": {"type": "string"}},
+            "revision_targets": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["score", "pass", "reasons", "revision_targets"],
+    }
+
+    system = (
+        "You are a strict prose editor. Score only the submitted draft body, "
+        "not the proposition text. Evaluate compliance with George Orwell's six rules: "
+        "avoid stale figures of speech; use short words when possible; cut words that can be cut; "
+        "prefer active voice; avoid foreign phrases, scientific words, and jargon when plain English works; "
+        "break these rules before writing something barbarous. Return JSON only. "
+        f"Set pass to true if and only if score is at least {threshold}."
+    )
+    user = (
+        f"Chapter: {item.chapter_title}\n"
+        f"Proposition: {item.proposition}\n\n"
+        "Draft body:\n"
+        f"{body}\n\n"
+        "Give a 0-10 score for Orwell-rule compliance. If the score is below the threshold, "
+        "explain the main fixes in plain English."
+    )
+    request_payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user}]},
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "orwell_gate",
+                "schema": schema,
+                "strict": True,
+            }
+        },
+        "reasoning": {"effort": "low"},
+        "max_output_tokens": 800,
+        "store": False,
+    }
+    data = json.dumps(request_payload).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        die(f"OpenAI scoring failed: HTTP {exc.code}: {detail[:500]}", code=1)
+    except urllib.error.URLError as exc:
+        die(f"OpenAI scoring failed: {exc.reason}", code=1)
+
+    response_payload = json.loads(raw)
+    text = extract_response_text(response_payload)
+    try:
+        score = json.loads(text)
+    except json.JSONDecodeError:
+        die("OpenAI scoring returned invalid JSON", code=1)
+
+    if not isinstance(score, dict):
+        die("OpenAI scoring returned the wrong shape", code=1)
+    score_value = int(score.get("score", 0))
+    score["score"] = max(0, min(10, score_value))
+    score["pass"] = bool(score.get("pass")) and score["score"] >= threshold
+    score["threshold"] = threshold
+    score["model"] = model
+    return score
+
+
+def print_score(score: dict[str, Any]) -> None:
+    status = "pass" if score.get("pass") else "fail"
+    print(f"score    : {score.get('score')}/10 {status}")
+    reasons = score.get("reasons", [])
+    if isinstance(reasons, list) and reasons:
+        print("why      :")
+        for reason in reasons[:6]:
+            print(f"- {reason}")
+    targets = score.get("revision_targets", [])
+    if isinstance(targets, list) and targets:
+        print("fix      :")
+        for target in targets[:6]:
+            print(f"- {target}")
+
+
+def run_quality_gate(
+    item: WorkItem,
+    book_config_path: Path,
+    book_config: dict[str, Any],
+) -> bool:
+    if not gate_enabled(book_config):
+        return True
+
+    print("scoring  : Orwell gate via OpenAI")
+    score = score_with_openai(item, book_config)
+    score["body_hash"] = body_hash(item.path)
+    write_state(item, book_config_path, book_config, score)
+    print_score(score)
+    return bool(score.get("pass"))
 
 
 def command_write(book_config_path: Path, args: list[str]) -> int:
@@ -324,7 +588,7 @@ def command_write(book_config_path: Path, args: list[str]) -> int:
     items = work_items(book_config_path, book_config)
 
     while True:
-        item = next_incomplete(items)
+        item = next_incomplete(items, book_config_path, book_config)
         if item is None:
             print("complete all propositions")
             return 0
@@ -346,6 +610,10 @@ def command_write(book_config_path: Path, args: list[str]) -> int:
             print(f"incomplete {current}/{item.min_chars}; need {item.min_chars - current} more")
             return 1
 
+        if not run_quality_gate(item, book_config_path, book_config):
+            print("blocked  : revise this proposition before moving on")
+            return 1
+
         print(f"done {current}/{item.min_chars}")
         if once:
             return 0
@@ -356,8 +624,8 @@ def command_status(book_config_path: Path, args: list[str]) -> int:
         die("valid shape: wb st [-c <book_json>]")
     book_config = load_book_config(book_config_path)
     items = work_items(book_config_path, book_config)
-    complete = [item for item in items if char_count(item.path) >= item.min_chars]
-    current = next_incomplete(items)
+    complete = [item for item in items if item_complete(item, book_config_path, book_config)]
+    current = next_incomplete(items, book_config_path, book_config)
 
     print(book_config.get("title", "Untitled"))
     print(f"config   : {muted_path(book_config_path)}")
@@ -367,6 +635,12 @@ def command_status(book_config_path: Path, args: list[str]) -> int:
     else:
         print(f"next     : {current.chapter_title} / {current.proposition_index}")
         print(f"chars    : {char_count(current.path)}/{current.min_chars}")
+        if gate_enabled(book_config) and char_count(current.path) >= current.min_chars:
+            state = read_state(current, book_config_path, book_config)
+            if state.get("body_hash") == body_hash(current.path):
+                print(f"score    : {state.get('score', 'unscored')}/10")
+            else:
+                print("score    : unscored")
         print(f"draft    : {muted_path(current.path)}")
     return 0
 
@@ -377,7 +651,7 @@ def command_list(book_config_path: Path, args: list[str]) -> int:
     book_config = load_book_config(book_config_path)
     for item in work_items(book_config_path, book_config):
         count = char_count(item.path)
-        mark = "done" if count >= item.min_chars else "todo"
+        mark = "done" if item_complete(item, book_config_path, book_config) else "todo"
         print(
             f"{mark:4} {item.chapter_index + 1:02d}.{item.proposition_index:02d} "
             f"{count:4}/{item.min_chars:<4} {item.chapter_title}"
@@ -389,7 +663,7 @@ def command_show(book_config_path: Path, args: list[str]) -> int:
     if args:
         die("valid shape: wb sh [-c <book_json>]")
     book_config = load_book_config(book_config_path)
-    item = next_incomplete(work_items(book_config_path, book_config))
+    item = next_incomplete(work_items(book_config_path, book_config), book_config_path, book_config)
     if item is None:
         print("complete all propositions")
         return 0

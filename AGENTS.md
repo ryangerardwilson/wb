@@ -16,8 +16,10 @@
 
 - App config is XDG compliant: `$XDG_CONFIG_HOME/wb/config.json`, falling back to `~/.config/wb/config.json`.
 - `wb conf` opens the app config.
-- The app config may contain generic defaults only, such as the default book config filename, draft directory, extension, and minimum character threshold.
+- The app config may contain generic defaults only, such as the default book config filename, draft directory, extension, minimum character threshold, and generic quality-gate settings.
 - Do not put book-specific planning in the XDG app config unless the user explicitly asks for a machine-local personal setup.
+- The default quality gate uses OpenAI `gpt-5.5` to score draft bodies against George Orwell's six prose rules.
+- The OpenAI API key must be read by sourcing `~/.bashrc` and reading `OPENAI_API_KEY`; never commit, print, or log plaintext key material.
 
 ## Command Shape
 

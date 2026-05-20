@@ -81,7 +81,11 @@ class MainTests(unittest.TestCase):
                     """\
                     {
                       "title": "Small",
-                      "settings": {"draft_dir": "drafts", "min_chars": 1},
+                      "settings": {
+                        "draft_dir": "drafts",
+                        "min_chars": 1,
+                        "quality_gate": {"enabled": false}
+                      },
                       "chapters": [
                         {"title": "One", "propositions": ["Argue one thing."]}
                       ]

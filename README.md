@@ -6,6 +6,12 @@ proposition at a time.
 The app is generic. It does not ship with any book plan, manuscript, or private
 writing material.
 
+By default, a proposition advances only after:
+
+1. The draft body reaches the configured minimum character count.
+2. The OpenAI quality gate scores that exact draft at least `7/10` against
+   George Orwell's six rules.
+
 ## Install
 
 ```bash
@@ -95,7 +101,14 @@ The app config stores generic defaults only:
   "book_config": "wb.json",
   "draft_dir": "drafts",
   "extension": "md",
-  "min_chars": 500
+  "min_chars": 500,
+  "quality_gate": {
+    "enabled": true,
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "threshold": 7,
+    "rules": "orwell_6"
+  }
 }
 ```
 
@@ -108,6 +121,21 @@ Editor resolution follows the workspace contract:
 1. `$VISUAL`
 2. `$EDITOR`
 3. `vim`
+
+The OpenAI API key is read by sourcing `~/.bashrc` and reading
+`OPENAI_API_KEY`. The key is never written to the app repo or printed by `wb`.
+
+To disable scoring for a specific book, set this in that book's JSON config:
+
+```json
+{
+  "settings": {
+    "quality_gate": {
+      "enabled": false
+    }
+  }
+}
+```
 
 ## Release
 
