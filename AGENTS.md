@@ -10,27 +10,30 @@
 - `wb` is a generic writing CLI for drafting long work one proposition at a time.
 - Keep the app independent of any specific book, manuscript, author plan, or private project.
 - Do not commit book outlines, manuscript drafts, proposition lists, or generated drafts to this repo.
-- Book-specific data belongs in the user's book project as a separate JSON config and draft files.
+- Book-specific data belongs in the user's book project as a separate JSON structure file and draft files.
 
 ## Config
 
 - App config is XDG compliant: `$XDG_CONFIG_HOME/wb/config.json`, falling back to `~/.config/wb/config.json`.
 - `wb conf` opens the app config.
-- The app config may contain generic defaults only, such as the default book config filename, draft directory, extension, minimum character threshold, and generic quality-gate settings.
-- Do not put book-specific planning in the XDG app config unless the user explicitly asks for a machine-local personal setup.
-- The default quality gate uses OpenAI `gpt-5.5` to score draft bodies at least 3/10 against George Orwell's six prose rules.
-- The OpenAI API key must be read by sourcing `~/.bashrc` and reading `OPENAI_API_KEY`; never commit, print, or log plaintext key material.
+- The app config may contain generic defaults and machine-local presets only:
+  - `extension`
+  - `min_chars`
+  - `presets`
+- A preset maps a user-facing name to a structure JSON path and drafts directory.
+- Do not put book-specific planning content in the app repo or app config.
 
 ## Command Shape
 
-- Keep the primary loop compact:
-  - `wb`
-  - `wb w -1`
-  - `wb st`
-  - `wb sh`
-  - `wb ls`
-  - `wb x -o manuscript.md`
-  - `wb init`
-  - `wb conf`
-- Use `-c <book_json>` for an explicit book config path.
-- Preserve the no-arg primary action: `wb` opens the next proposition.
+- Keep the primary target explicit:
+  - `wb <structure_json> <drafts_dir>`
+  - `wb <structure_json> <drafts_dir> -1`
+  - `wb <structure_json> <drafts_dir> status`
+  - `wb <structure_json> <drafts_dir> ls`
+  - `wb <structure_json> <drafts_dir> show`
+  - `wb <structure_json> <drafts_dir> export -o manuscript.md`
+- Preserve named presets:
+  - `wb preset "an eye for an eye" <structure_json> <drafts_dir>`
+  - `wb "an eye for an eye"`
+  - `wb "an eye for an eye" status`
+- No-arg `wb` prints help through the shared CLI contract.

@@ -8,10 +8,6 @@ import shlex
 import subprocess
 import sys
 import textwrap
-import hashlib
-import encodings.idna  # Force PyInstaller to bundle HTTPS hostname encoding.
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +17,7 @@ from rgw_cli_contract import AppSpec, resolve_install_script_path, run_app
 
 
 APP_NAME = "wb"
-DEFAULT_BOOK_CONFIG_NAME = "wb.json"
+DEFAULT_STRUCTURE_NAME = "structure.json"
 DRAFT_MARKER = "<!-- wb:draft:start -->"
 VIM_WRAP_MODELINE = "<!-- wb: vim wraps prose at 79 columns -->"
 SHORT_VIM_WRAP_MODELINE = "<!-- vim: setlocal tw=79 cc=79 wrap lbr fo+=t: -->"
@@ -40,64 +36,50 @@ flags:
     upgrade to the latest release
 
 features:
-  open the next unfinished proposition in your editor
-  # wb or wb w [-1] [-c <book_json>]
-  wb
-  wb w -1
-  wb w -c ./book.json
+  create a generic book structure file
+  # init [structure_json]
+  wb init
+  wb init ./structure.json
 
-  advance only after length and Orwell-rule scoring pass
-  # quality gate
-  score >= 3/10 via gpt-5.5
+  save or edit a named preset
+  # preset <name> <structure_json> <drafts_dir>
+  wb preset "an eye for an eye" ./structure.json ./drafts
+  wb conf
+
+  open the next unfinished proposition in your editor
+  # <structure_json> <drafts_dir> [-1]
+  wb ./structure.json ./drafts
+  wb ./structure.json ./drafts -1
+
+  use a named preset
+  # <preset> [status|ls|show|export]
+  wb "an eye for an eye"
+  wb "an eye for an eye" status
 
   inspect the active book without opening the editor
-  # st|sh|ls [-c <book_json>]
-  wb st
-  wb sh
-  wb ls
+  # <structure_json> <drafts_dir> status|ls|show
+  wb ./structure.json ./drafts status
+  wb ./structure.json ./drafts ls
+  wb ./structure.json ./drafts show
 
   export completed draft bodies into a manuscript
-  # x [-all] [-o <output_md>] [-c <book_json>]
-  wb x -o manuscript.md
-  wb x -all
-
-  create a generic book config in the current directory
-  # init
-  wb init
-
-  edit the app config
-  # conf
-  wb conf
+  # <structure_json> <drafts_dir> export [-all] [-o <output_md>]
+  wb ./structure.json ./drafts export -o manuscript.md
+  wb "an eye for an eye" export -all
 """
 
 APP_CONFIG_BOOTSTRAP = """{
-  "book_config": "wb.json",
-  "draft_dir": "drafts",
   "extension": "md",
   "min_chars": 500,
-  "quality_gate": {
-    "enabled": true,
-    "provider": "openai",
-    "model": "gpt-5.5",
-    "threshold": 3,
-    "rules": "orwell_6"
-  }
+  "presets": {}
 }
 """
 
-BOOK_CONFIG_BOOTSTRAP = """{
+BOOK_STRUCTURE_BOOTSTRAP = """{
   "title": "Untitled Book",
   "settings": {
-    "draft_dir": "drafts",
-    "min_chars": 500,
     "extension": "md",
-    "quality_gate": {
-      "enabled": true,
-      "provider": "openai",
-      "model": "gpt-5.5",
-      "threshold": 3,
-      "rules": "orwell_6"
-    }
+    "min_chars": 500
   },
   "chapters": [
     {
@@ -109,6 +91,26 @@ BOOK_CONFIG_BOOTSTRAP = """{
   ]
 }
 """
+
+TARGET_COMMANDS = {
+    "w": "write",
+    "write": "write",
+    "st": "status",
+    "status": "status",
+    "ls": "list",
+    "list": "list",
+    "sh": "show",
+    "show": "show",
+    "x": "export",
+    "export": "export",
+}
+
+
+@dataclass(frozen=True)
+class BookTarget:
+    structure_path: Path
+    drafts_dir: Path
+    preset_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -134,17 +136,9 @@ def app_config_path() -> Path:
 
 def app_defaults() -> dict[str, Any]:
     return {
-        "book_config": DEFAULT_BOOK_CONFIG_NAME,
-        "draft_dir": "drafts",
         "extension": "md",
         "min_chars": 500,
-        "quality_gate": {
-            "enabled": True,
-            "provider": "openai",
-            "model": "gpt-5.5",
-            "threshold": 3,
-            "rules": "orwell_6",
-        },
+        "presets": {},
     }
 
 
@@ -161,7 +155,15 @@ def load_app_config() -> dict[str, Any]:
 
     config = app_defaults()
     config.update(raw)
+    if not isinstance(config.get("presets"), dict):
+        die("app config presets must be a JSON object")
     return config
+
+
+def write_app_config(config: dict[str, Any]) -> None:
+    path = app_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def muted_path(path: Path) -> str:
@@ -181,86 +183,118 @@ def die(message: str, code: int = 2) -> None:
     raise SystemExit(code)
 
 
-def resolve_book_config(flag_value: str | None = None) -> Path:
-    if flag_value:
-        return Path(flag_value).expanduser().resolve()
+def resolve_path(value: str, base: Path) -> Path:
+    if not value.strip():
+        die("path must not be empty")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    return path.resolve()
 
+
+def resolve_arg_path(value: str) -> Path:
+    return resolve_path(value, Path.cwd())
+
+
+def resolve_preset(name: str) -> BookTarget:
     config = load_app_config()
-    raw = str(config.get("book_config") or DEFAULT_BOOK_CONFIG_NAME)
-    path = Path(raw).expanduser()
-    if path.is_absolute():
-        return path
-    return (Path.cwd() / path).resolve()
+    presets = config.get("presets", {})
+    if not isinstance(presets, dict):
+        die("app config presets must be a JSON object")
+
+    raw = presets.get(name)
+    if raw is None:
+        die(
+            f"unknown preset: {name}\n"
+            "run wb preset <name> <structure_json> <drafts_dir> or wb conf"
+        )
+    if not isinstance(raw, dict):
+        die(f"preset {name!r} must be a JSON object")
+
+    structure = raw.get("structure")
+    drafts = raw.get("drafts")
+    if not isinstance(structure, str) or not structure.strip():
+        die(f"preset {name!r} requires a structure path")
+    if not isinstance(drafts, str) or not drafts.strip():
+        die(f"preset {name!r} requires a drafts dir")
+
+    base = app_config_path().parent
+    return BookTarget(
+        structure_path=resolve_path(structure, base),
+        drafts_dir=resolve_path(drafts, base),
+        preset_name=name,
+    )
 
 
-def parse_common(args: list[str]) -> tuple[Path, list[str]]:
-    config_flag: str | None = None
-    rest: list[str] = []
-    i = 0
-    while i < len(args):
-        token = args[i]
-        if token == "-c":
-            if i + 1 >= len(args):
-                die("-c requires a book config path")
-            config_flag = args[i + 1]
-            i += 2
-            continue
-        rest.append(token)
-        i += 1
-    return resolve_book_config(config_flag), rest
+def parse_target(argv: list[str]) -> tuple[BookTarget, str, list[str]]:
+    if not argv:
+        die("valid shape: wb <structure_json> <drafts_dir> [status|ls|show|export]")
+
+    if len(argv) >= 2 and argv[1] not in TARGET_COMMANDS:
+        target = BookTarget(
+            structure_path=resolve_arg_path(argv[0]),
+            drafts_dir=resolve_arg_path(argv[1]),
+        )
+        rest = argv[2:]
+    else:
+        target = resolve_preset(argv[0])
+        rest = argv[1:]
+
+    if not rest or rest[0].startswith("-"):
+        return target, "write", rest
+
+    command = TARGET_COMMANDS.get(rest[0])
+    if command is None:
+        die(f"unknown command: {rest[0]}")
+    return target, command, rest[1:]
 
 
-def load_book_config(path: Path) -> dict[str, Any]:
+def load_structure(path: Path) -> dict[str, Any]:
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
+        structure = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        die(f"book config not found: {path}\nrun wb init or pass -c <book_json>")
+        die(f"structure not found: {path}\nrun wb init <structure_json>")
     except json.JSONDecodeError as exc:
         die(f"invalid JSON in {path}: {exc}")
 
-    if not isinstance(config, dict):
-        die("book config root must be a JSON object")
-    if not isinstance(config.get("chapters"), list) or not config["chapters"]:
-        die("book config must contain a non-empty chapters array")
-    return config
+    if not isinstance(structure, dict):
+        die("structure root must be a JSON object")
+    if not isinstance(structure.get("chapters"), list) or not structure["chapters"]:
+        die("structure must contain a non-empty chapters array")
+    return structure
 
 
-def book_settings(book_config: dict[str, Any]) -> dict[str, Any]:
-    raw = book_config.get("settings", {})
+def structure_settings(structure: dict[str, Any]) -> dict[str, Any]:
+    raw = structure.get("settings", {})
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
-        die("book settings must be an object")
-    merged = load_app_config()
+        die("structure settings must be an object")
+
+    config = load_app_config()
+    merged = {
+        "extension": config.get("extension", "md"),
+        "min_chars": config.get("min_chars", 500),
+    }
     for key, value in raw.items():
-        if key == "quality_gate" and isinstance(value, dict):
-            gate = dict(merged.get("quality_gate", {}))
-            gate.update(value)
-            merged["quality_gate"] = gate
-        else:
-            merged[key] = value
+        merged[key] = value
     return merged
 
 
-def min_chars_for(book_config: dict[str, Any], chapter: dict[str, Any]) -> int:
-    value = chapter.get("min_chars", book_settings(book_config).get("min_chars", 500))
+def min_chars_for(structure: dict[str, Any], chapter: dict[str, Any]) -> int:
+    value = chapter.get("min_chars", structure_settings(structure).get("min_chars", 500))
     try:
         return int(value)
     except (TypeError, ValueError):
         die(f"invalid min_chars value: {value!r}")
 
 
-def draft_root(book_config_path: Path, book_config: dict[str, Any]) -> Path:
-    draft_dir = book_settings(book_config).get("draft_dir", "drafts")
-    return (book_config_path.parent / str(draft_dir)).resolve()
-
-
-def work_items(book_config_path: Path, book_config: dict[str, Any]) -> list[WorkItem]:
+def work_items(target: BookTarget, structure: dict[str, Any]) -> list[WorkItem]:
     items: list[WorkItem] = []
-    root = draft_root(book_config_path, book_config)
-    extension = str(book_settings(book_config).get("extension", "md")).lstrip(".")
+    root = target.drafts_dir
+    extension = str(structure_settings(structure).get("extension", "md")).lstrip(".") or "md"
 
-    for chapter_index, chapter in enumerate(book_config["chapters"]):
+    for chapter_index, chapter in enumerate(structure["chapters"]):
         if not isinstance(chapter, dict):
             die(f"chapter {chapter_index + 1} must be an object")
 
@@ -270,7 +304,7 @@ def work_items(book_config_path: Path, book_config: dict[str, Any]) -> list[Work
             die(f"{title}: propositions must be a non-empty array")
 
         chapter_dir = root / f"{chapter_index:02d}-{slugify(title)}"
-        chapter_min_chars = min_chars_for(book_config, chapter)
+        chapter_min_chars = min_chars_for(structure, chapter)
 
         for proposition_index, proposition in enumerate(propositions, start=1):
             text = str(proposition).strip()
@@ -308,71 +342,8 @@ def char_count(path: Path) -> int:
     return len(draft_body(path))
 
 
-def body_hash(path: Path) -> str:
-    return hashlib.sha256(draft_body(path).encode("utf-8")).hexdigest()
-
-
-def quality_gate(book_config: dict[str, Any]) -> dict[str, Any]:
-    raw = book_settings(book_config).get("quality_gate", {})
-    if raw is None:
-        raw = {}
-    if not isinstance(raw, dict):
-        die("quality_gate must be an object")
-
-    gate = {
-        "enabled": True,
-        "provider": "openai",
-        "model": "gpt-5.5",
-        "threshold": 3,
-        "rules": "orwell_6",
-    }
-    gate.update(raw)
-    return gate
-
-
-def gate_enabled(book_config: dict[str, Any]) -> bool:
-    return bool(quality_gate(book_config).get("enabled", True))
-
-
-def state_path(item: WorkItem, book_config_path: Path, book_config: dict[str, Any]) -> Path:
-    root = draft_root(book_config_path, book_config) / ".wb-state"
-    rel = item.path.relative_to(draft_root(book_config_path, book_config))
-    return root / rel.with_suffix(rel.suffix + ".json")
-
-
-def read_state(item: WorkItem, book_config_path: Path, book_config: dict[str, Any]) -> dict[str, Any]:
-    path = state_path(item, book_config_path, book_config)
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def write_state(
-    item: WorkItem,
-    book_config_path: Path,
-    book_config: dict[str, Any],
-    state: dict[str, Any],
-) -> None:
-    path = state_path(item, book_config_path, book_config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def item_complete(item: WorkItem, book_config_path: Path, book_config: dict[str, Any]) -> bool:
-    if char_count(item.path) < item.min_chars:
-        return False
-    if not gate_enabled(book_config):
-        return True
-
-    state = read_state(item, book_config_path, book_config)
-    return (
-        state.get("body_hash") == body_hash(item.path)
-        and int(state.get("score", 0)) >= int(quality_gate(book_config).get("threshold", 3))
-    )
+def item_complete(item: WorkItem) -> bool:
+    return char_count(item.path) >= item.min_chars
 
 
 def draft_scaffold(item: WorkItem, total_props: int) -> str:
@@ -431,13 +402,9 @@ def ensure_draft(item: WorkItem, total_props: int) -> None:
     item.path.write_text(content, encoding="utf-8")
 
 
-def next_incomplete(
-    items: list[WorkItem],
-    book_config_path: Path,
-    book_config: dict[str, Any],
-) -> WorkItem | None:
+def next_incomplete(items: list[WorkItem]) -> WorkItem | None:
     for item in items:
-        if not item_complete(item, book_config_path, book_config):
+        if not item_complete(item):
             return item
     return None
 
@@ -459,176 +426,19 @@ def open_editor(path: Path) -> int:
     return subprocess.run([*command, str(path)], check=False).returncode
 
 
-def openai_api_key_from_bashrc() -> str:
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            'source "$HOME/.bashrc" >/dev/null 2>&1 || true; printf "%s" "${OPENAI_API_KEY:-}"',
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    key = result.stdout.strip()
-    if key:
-        return key
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if key:
-        return key
-    die("OPENAI_API_KEY not found after sourcing ~/.bashrc", code=1)
+def load_target(target: BookTarget) -> tuple[dict[str, Any], list[WorkItem]]:
+    structure = load_structure(target.structure_path)
+    return structure, work_items(target, structure)
 
 
-def extract_response_text(payload: dict[str, Any]) -> str:
-    output_text = payload.get("output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text
-
-    parts: list[str] = []
-    for item in payload.get("output", []):
-        if not isinstance(item, dict):
-            continue
-        for content in item.get("content", []):
-            if isinstance(content, dict):
-                text = content.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-    return "\n".join(parts).strip()
+def print_target(target: BookTarget) -> None:
+    if target.preset_name is not None:
+        print(f"preset   : {target.preset_name}")
+    print(f"structure: {muted_path(target.structure_path)}")
+    print(f"drafts   : {muted_path(target.drafts_dir)}")
 
 
-def openai_json_request(request_payload: dict[str, Any], label: str) -> dict[str, Any]:
-    api_key = openai_api_key_from_bashrc()
-    data = json.dumps(request_payload).encode("utf-8")
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        die(f"{label} failed: HTTP {exc.code}: {detail[:500]}", code=1)
-    except urllib.error.URLError as exc:
-        die(f"{label} failed: {exc.reason}", code=1)
-    except Exception as exc:
-        die(f"{label} failed: {exc}", code=1)
-
-    try:
-        response_payload = json.loads(raw)
-    except json.JSONDecodeError:
-        die(f"{label} returned invalid response JSON", code=1)
-
-    text = extract_response_text(response_payload)
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError:
-        die(f"{label} returned invalid JSON", code=1)
-
-    if not isinstance(result, dict):
-        die(f"{label} returned the wrong shape", code=1)
-    return result
-
-
-def score_with_openai(item: WorkItem, book_config: dict[str, Any]) -> dict[str, Any]:
-    gate = quality_gate(book_config)
-    model = str(gate.get("model") or "gpt-5.5")
-    threshold = int(gate.get("threshold", 3))
-    body = draft_body(item.path)
-
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "score": {"type": "integer"},
-            "pass": {"type": "boolean"},
-            "reasons": {"type": "array", "items": {"type": "string"}},
-            "revision_targets": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["score", "pass", "reasons", "revision_targets"],
-    }
-
-    system = (
-        "You are a strict prose editor. Score only the submitted draft body, "
-        "not the proposition text. Evaluate compliance with George Orwell's six rules: "
-        "avoid stale figures of speech; use short words when possible; cut words that can be cut; "
-        "prefer active voice; avoid foreign phrases, scientific words, and jargon when plain English works; "
-        "break these rules before writing something barbarous. Return JSON only. "
-        f"Set pass to true if and only if score is at least {threshold}."
-    )
-    user = (
-        f"Chapter: {item.chapter_title}\n"
-        f"Proposition: {item.proposition}\n\n"
-        "Draft body:\n"
-        f"{body}\n\n"
-        "Give a 0-10 score for Orwell-rule compliance. If the score is below the threshold, "
-        "explain the main fixes in plain English."
-    )
-    request_payload = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": system}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user}]},
-        ],
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "orwell_gate",
-                "schema": schema,
-                "strict": True,
-            }
-        },
-        "reasoning": {"effort": "low"},
-        "max_output_tokens": 800,
-        "store": False,
-    }
-    score = openai_json_request(request_payload, "OpenAI scoring")
-    score_value = int(score.get("score", 0))
-    score["score"] = max(0, min(10, score_value))
-    score["pass"] = score["score"] >= threshold
-    score["threshold"] = threshold
-    score["model"] = model
-    return score
-
-
-def print_score(score: dict[str, Any]) -> None:
-    status = "pass" if score.get("pass") else "fail"
-    print(f"score    : {score.get('score')}/10 {status}")
-    reasons = score.get("reasons", [])
-    if isinstance(reasons, list) and reasons:
-        print("why      :")
-        for reason in reasons[:6]:
-            print(f"- {reason}")
-    targets = score.get("revision_targets", [])
-    if isinstance(targets, list) and targets:
-        print("fix      :")
-        for target in targets[:6]:
-            print(f"- {target}")
-
-
-def run_quality_gate(
-    item: WorkItem,
-    book_config_path: Path,
-    book_config: dict[str, Any],
-) -> dict[str, Any]:
-    if not gate_enabled(book_config):
-        return {"pass": True}
-
-    print("scoring  : Orwell gate via OpenAI")
-    score = score_with_openai(item, book_config)
-    score["body_hash"] = body_hash(item.path)
-    write_state(item, book_config_path, book_config, score)
-    print_score(score)
-    return score
-
-
-def command_write(book_config_path: Path, args: list[str]) -> int:
+def command_write(target: BookTarget, args: list[str]) -> int:
     once = False
     rest: list[str] = []
     for token in args:
@@ -637,18 +447,17 @@ def command_write(book_config_path: Path, args: list[str]) -> int:
         else:
             rest.append(token)
     if rest:
-        die("valid shape: wb w [-1] [-c <book_json>]")
+        die("valid shape: wb <structure_json> <drafts_dir> [-1] or wb <preset> [-1]")
 
-    book_config = load_book_config(book_config_path)
-    items = work_items(book_config_path, book_config)
+    structure, items = load_target(target)
 
     while True:
-        item = next_incomplete(items, book_config_path, book_config)
+        item = next_incomplete(items)
         if item is None:
             print("complete all propositions")
             return 0
 
-        total_props = len(book_config["chapters"][item.chapter_index]["propositions"])
+        total_props = len(structure["chapters"][item.chapter_index]["propositions"])
         ensure_draft(item, total_props)
         current = char_count(item.path)
         print(
@@ -665,49 +474,38 @@ def command_write(book_config_path: Path, args: list[str]) -> int:
             print(f"incomplete {current}/{item.min_chars}; need {item.min_chars - current} more")
             return 1
 
-        score = run_quality_gate(item, book_config_path, book_config)
-        if not score.get("pass"):
-            print("blocked  : revise this proposition before moving on")
-            return 1
-
         print(f"done {current}/{item.min_chars}")
         if once:
             return 0
 
 
-def command_status(book_config_path: Path, args: list[str]) -> int:
+def command_status(target: BookTarget, args: list[str]) -> int:
     if args:
-        die("valid shape: wb st [-c <book_json>]")
-    book_config = load_book_config(book_config_path)
-    items = work_items(book_config_path, book_config)
-    complete = [item for item in items if item_complete(item, book_config_path, book_config)]
-    current = next_incomplete(items, book_config_path, book_config)
+        die("valid shape: wb <structure_json> <drafts_dir> status or wb <preset> status")
+    structure, items = load_target(target)
+    complete = [item for item in items if item_complete(item)]
+    current = next_incomplete(items)
+    percent = round((len(complete) / len(items)) * 100) if items else 0
 
-    print(book_config.get("title", "Untitled"))
-    print(f"config   : {muted_path(book_config_path)}")
-    print(f"progress : {len(complete)}/{len(items)}")
+    print(structure.get("title", "Untitled"))
+    print_target(target)
+    print(f"progress : {len(complete)}/{len(items)} ({percent}%)")
     if current is None:
         print("next     : none")
     else:
         print(f"next     : {current.chapter_title} / {current.proposition_index}")
         print(f"chars    : {char_count(current.path)}/{current.min_chars}")
-        if gate_enabled(book_config) and char_count(current.path) >= current.min_chars:
-            state = read_state(current, book_config_path, book_config)
-            if state.get("body_hash") == body_hash(current.path):
-                print(f"score    : {state.get('score', 'unscored')}/10")
-            else:
-                print("score    : unscored")
         print(f"draft    : {muted_path(current.path)}")
     return 0
 
 
-def command_list(book_config_path: Path, args: list[str]) -> int:
+def command_list(target: BookTarget, args: list[str]) -> int:
     if args:
-        die("valid shape: wb ls [-c <book_json>]")
-    book_config = load_book_config(book_config_path)
-    for item in work_items(book_config_path, book_config):
+        die("valid shape: wb <structure_json> <drafts_dir> ls or wb <preset> ls")
+    _, items = load_target(target)
+    for item in items:
         count = char_count(item.path)
-        mark = "done" if item_complete(item, book_config_path, book_config) else "todo"
+        mark = "done" if item_complete(item) else "todo"
         print(
             f"{mark:4} {item.chapter_index + 1:02d}.{item.proposition_index:02d} "
             f"{count:4}/{item.min_chars:<4} {item.chapter_title}"
@@ -715,11 +513,11 @@ def command_list(book_config_path: Path, args: list[str]) -> int:
     return 0
 
 
-def command_show(book_config_path: Path, args: list[str]) -> int:
+def command_show(target: BookTarget, args: list[str]) -> int:
     if args:
-        die("valid shape: wb sh [-c <book_json>]")
-    book_config = load_book_config(book_config_path)
-    item = next_incomplete(work_items(book_config_path, book_config), book_config_path, book_config)
+        die("valid shape: wb <structure_json> <drafts_dir> show or wb <preset> show")
+    _, items = load_target(target)
+    item = next_incomplete(items)
     if item is None:
         print("complete all propositions")
         return 0
@@ -733,7 +531,7 @@ def command_show(book_config_path: Path, args: list[str]) -> int:
     return 0
 
 
-def command_export(book_config_path: Path, args: list[str]) -> int:
+def command_export(target: BookTarget, args: list[str]) -> int:
     include_all = False
     output_path: Path | None = None
     rest: list[str] = []
@@ -746,22 +544,25 @@ def command_export(book_config_path: Path, args: list[str]) -> int:
         elif token == "-o":
             if i + 1 >= len(args):
                 die("-o requires an output path")
-            output_path = Path(args[i + 1]).expanduser()
+            output_path = resolve_arg_path(args[i + 1])
             i += 2
         else:
             rest.append(token)
             i += 1
     if rest:
-        die("valid shape: wb x [-all] [-o <output_md>] [-c <book_json>]")
+        die(
+            "valid shape: wb <structure_json> <drafts_dir> export [-all] [-o <output_md>] "
+            "or wb <preset> export [-all] [-o <output_md>]"
+        )
 
-    book_config = load_book_config(book_config_path)
+    structure, items = load_target(target)
     grouped: dict[int, list[WorkItem]] = {}
-    for item in work_items(book_config_path, book_config):
+    for item in items:
         grouped.setdefault(item.chapter_index, []).append(item)
 
-    chunks: list[str] = [f"# {book_config.get('title', 'Untitled')}".strip(), ""]
+    chunks: list[str] = [f"# {structure.get('title', 'Untitled')}".strip(), ""]
     for chapter_index, chapter_items in grouped.items():
-        chapter = book_config["chapters"][chapter_index]
+        chapter = structure["chapters"][chapter_index]
         chunks.append(f"## {chapter.get('title', f'Chapter {chapter_index + 1}')}")
         chunks.append("")
         for item in chapter_items:
@@ -775,6 +576,7 @@ def command_export(book_config_path: Path, args: list[str]) -> int:
 
     output = "\n".join(chunks).rstrip() + "\n"
     if output_path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(output, encoding="utf-8")
         print(muted_path(output_path))
     else:
@@ -783,38 +585,65 @@ def command_export(book_config_path: Path, args: list[str]) -> int:
 
 
 def command_init(args: list[str]) -> int:
-    if args:
-        die("valid shape: wb init")
-    path = resolve_book_config()
+    if len(args) > 1:
+        die("valid shape: wb init [structure_json]")
+    path = resolve_arg_path(args[0] if args else DEFAULT_STRUCTURE_NAME)
     if path.exists():
-        die(f"book config already exists: {path}", code=1)
-    path.write_text(BOOK_CONFIG_BOOTSTRAP, encoding="utf-8")
+        die(f"structure already exists: {path}", code=1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(BOOK_STRUCTURE_BOOTSTRAP, encoding="utf-8")
     print(muted_path(path))
+    return 0
+
+
+def command_preset(args: list[str]) -> int:
+    if len(args) != 3:
+        die("valid shape: wb preset <name> <structure_json> <drafts_dir>")
+    name = args[0].strip()
+    if not name:
+        die("preset name must not be empty")
+
+    structure_path = resolve_arg_path(args[1])
+    drafts_dir = resolve_arg_path(args[2])
+    config = load_app_config()
+    presets = config.setdefault("presets", {})
+    if not isinstance(presets, dict):
+        die("app config presets must be a JSON object")
+    presets[name] = {
+        "structure": str(structure_path),
+        "drafts": str(drafts_dir),
+    }
+    write_app_config(config)
+
+    print(f"preset   : {name}")
+    print(f"structure: {muted_path(structure_path)}")
+    print(f"drafts   : {muted_path(drafts_dir)}")
     return 0
 
 
 def dispatch(argv: list[str]) -> int:
     if not argv:
-        return command_write(resolve_book_config(), [])
+        die("valid shape: wb <structure_json> <drafts_dir> or wb <preset>")
 
     command = argv[0]
     if command == "init":
         return command_init(argv[1:])
+    if command == "preset":
+        return command_preset(argv[1:])
 
-    book_config_path, args = parse_common(argv[1:])
+    target, action, args = parse_target(argv)
+    if action == "write":
+        return command_write(target, args)
+    if action == "status":
+        return command_status(target, args)
+    if action == "list":
+        return command_list(target, args)
+    if action == "show":
+        return command_show(target, args)
+    if action == "export":
+        return command_export(target, args)
 
-    if command == "w":
-        return command_write(book_config_path, args)
-    if command == "st":
-        return command_status(book_config_path, args)
-    if command == "ls":
-        return command_list(book_config_path, args)
-    if command == "sh":
-        return command_show(book_config_path, args)
-    if command == "x":
-        return command_export(book_config_path, args)
-
-    die(f"unknown command: {command}")
+    die(f"unknown command: {action}")
     return 2
 
 
@@ -824,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
         version=__version__,
         help_text=HELP_TEXT,
         install_script_path=resolve_install_script_path(__file__),
-        no_args_mode="dispatch",
+        no_args_mode="help",
         config_path_factory=app_config_path,
         config_bootstrap_text=APP_CONFIG_BOOTSTRAP,
     )

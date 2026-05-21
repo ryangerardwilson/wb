@@ -6,11 +6,8 @@ proposition at a time.
 The app is generic. It does not ship with any book plan, manuscript, or private
 writing material.
 
-By default, a proposition advances only after:
-
-1. The draft body reaches the configured minimum character count.
-2. The OpenAI quality gate scores that exact draft at least `3/10` against
-   George Orwell's six rules.
+A proposition is complete when the draft body below the `wb` marker reaches the
+configured minimum character count.
 
 ## Install
 
@@ -43,43 +40,45 @@ wb -v
 wb -u
 ```
 
-Create a generic book config in the current directory:
+Create a generic book structure file:
 
 ```bash
 wb init
+wb init ./structure.json
 ```
 
-Write the next proposition:
+Write the next proposition with explicit paths:
 
 ```bash
-wb
-wb w -1
+wb ./structure.json ./drafts
+wb ./structure.json ./drafts -1
 ```
 
 Inspect progress:
 
 ```bash
-wb st
-wb sh
-wb ls
+wb ./structure.json ./drafts status
+wb ./structure.json ./drafts ls
+wb ./structure.json ./drafts show
 ```
 
 Export completed draft bodies:
 
 ```bash
-wb x -o manuscript.md
-wb x -all
+wb ./structure.json ./drafts export -o manuscript.md
+wb ./structure.json ./drafts export -all
 ```
 
-Use a specific book config:
+Save a named preset and use it from any directory:
 
 ```bash
-wb w -c ./book.json
-wb st -c ./book.json
-wb x -o manuscript.md -c ./book.json
+wb preset "an eye for an eye" /path/to/structure.json /path/to/drafts
+wb "an eye for an eye"
+wb "an eye for an eye" status
+wb "an eye for an eye" export -o manuscript.md
 ```
 
-Edit the app config:
+Edit the app config directly:
 
 ```bash
 wb conf
@@ -94,27 +93,44 @@ $XDG_CONFIG_HOME/wb/config.json
 ~/.config/wb/config.json
 ```
 
-The app config stores generic defaults only:
+The app config stores generic defaults and named presets:
 
 ```json
 {
-  "book_config": "wb.json",
-  "draft_dir": "drafts",
   "extension": "md",
   "min_chars": 500,
-  "quality_gate": {
-    "enabled": true,
-    "provider": "openai",
-    "model": "gpt-5.5",
-    "threshold": 3,
-    "rules": "orwell_6"
+  "presets": {
+    "an eye for an eye": {
+      "structure": "/path/to/structure.json",
+      "drafts": "/path/to/drafts"
+    }
   }
 }
 ```
 
-Book-specific structure belongs in a separate book JSON file. That file defines
-the title, chapters, propositions, and optional per-book settings. Drafts are
-plain Markdown files next to that book config.
+Book-specific structure belongs in a separate JSON file. That file defines the
+title, chapters, propositions, and optional per-book settings:
+
+```json
+{
+  "title": "Untitled Book",
+  "settings": {
+    "extension": "md",
+    "min_chars": 500
+  },
+  "chapters": [
+    {
+      "title": "Chapter One",
+      "propositions": [
+        "State the first proposition this chapter needs to prove."
+      ]
+    }
+  ]
+}
+```
+
+Drafts are plain Markdown files under the drafts directory passed on the command
+line or stored in the preset.
 
 Editor resolution follows the workspace contract:
 
@@ -125,21 +141,6 @@ Editor resolution follows the workspace contract:
 When `wb` launches Vim or Neovim, it sets prose wrapping at `79` characters with
 a `79` column marker. Draft files keep that as a plain comment rather than a
 Vim option string.
-
-The OpenAI API key is read by sourcing `~/.bashrc` and reading
-`OPENAI_API_KEY`. The key is never written to the app repo or printed by `wb`.
-
-To disable scoring for a specific book, set this in that book's JSON config:
-
-```json
-{
-  "settings": {
-    "quality_gate": {
-      "enabled": false
-    }
-  }
-}
-```
 
 ## Release
 
