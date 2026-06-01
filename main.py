@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from _version import __version__
-from rgw_cli_contract import AppSpec, resolve_install_script_path, run_app
 
 
 APP_NAME = "wb"
@@ -23,6 +22,13 @@ VIM_WRAP_MODELINE = "<!-- wb: vim wraps prose at 79 columns -->"
 SHORT_VIM_WRAP_MODELINE = "<!-- vim: setlocal tw=79 cc=79 wrap lbr fo+=t: -->"
 OLD_VIM_WRAP_MODELINE = "<!-- vim: setlocal textwidth=79 colorcolumn=79 wrap linebreak formatoptions+=t: -->"
 SCAFFOLD_WIDTH = 79
+ANSI_GRAY = "\033[38;5;245m"
+ANSI_RESET = "\033[0m"
+INSTALL_SCRIPT = (
+    Path(sys.executable).resolve().parent / "install.sh"
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().with_name("install.sh")
+)
 
 HELP_TEXT = """Writer's Block
 write long work one proposition at a time
@@ -41,31 +47,29 @@ features:
   wb init
   wb init ./structure.json
 
-  save or edit a named preset
-  # preset <name> <structure_json> <drafts_dir>
-  wb preset "an eye for an eye" ./structure.json ./drafts
-  wb conf
+  save a named preset
+  # preset save <name> structure <structure_json> drafts <drafts_dir>
+  wb preset save "an eye for an eye" structure ./structure.json drafts ./drafts
 
   open the next unfinished proposition in your editor
-  # <structure_json> <drafts_dir> [-1]
-  wb ./structure.json ./drafts
-  wb ./structure.json ./drafts -1
+  # write <structure_json> drafts <drafts_dir> [first]
+  wb write ./structure.json drafts ./drafts
+  wb write ./structure.json drafts ./drafts first
 
-  use a named preset
-  # <preset> [status|ls|show|export]
-  wb "an eye for an eye"
-  wb "an eye for an eye" status
-
-  inspect the active book without opening the editor
-  # <structure_json> <drafts_dir> status|ls|show
-  wb ./structure.json ./drafts status
-  wb ./structure.json ./drafts ls
-  wb ./structure.json ./drafts show
+  use a named preset for writing, inspection, or export
+  # use <preset> [status|list|show|export] [all] [to <output_md>]
+  wb use "an eye for an eye"
+  wb use "an eye for an eye" status
+  wb use "an eye for an eye" export to manuscript.md
 
   export completed draft bodies into a manuscript
-  # <structure_json> <drafts_dir> export [-all] [-o <output_md>]
-  wb ./structure.json ./drafts export -o manuscript.md
-  wb "an eye for an eye" export -all
+  # export <structure_json> drafts <drafts_dir> [all] [to <output_md>]
+  wb export ./structure.json drafts ./drafts to manuscript.md
+  wb export ./structure.json drafts ./drafts all
+
+  edit generic app defaults and machine-local presets
+  # config
+  wb config
 """
 
 APP_CONFIG_BOOTSTRAP = """{
@@ -92,18 +96,22 @@ BOOK_STRUCTURE_BOOTSTRAP = """{
 }
 """
 
-TARGET_COMMANDS = {
-    "w": "write",
-    "write": "write",
-    "st": "status",
-    "status": "status",
-    "ls": "list",
-    "list": "list",
-    "sh": "show",
-    "show": "show",
-    "x": "export",
-    "export": "export",
-}
+
+def muted(text: str) -> str:
+    if not sys.stdout.isatty() or "NO_COLOR" in os.environ:
+        return text
+    return f"{ANSI_GRAY}{text}{ANSI_RESET}"
+
+
+def print_help() -> None:
+    print(muted(HELP_TEXT.rstrip()))
+
+
+def upgrade_app() -> int:
+    if not INSTALL_SCRIPT.exists():
+        print(f"install.sh is missing: {INSTALL_SCRIPT}", file=sys.stderr)
+        return 1
+    return subprocess.run(["bash", str(INSTALL_SCRIPT), "-u"], check=False).returncode
 
 
 @dataclass(frozen=True)
@@ -206,7 +214,8 @@ def resolve_preset(name: str) -> BookTarget:
     if raw is None:
         die(
             f"unknown preset: {name}\n"
-            "run wb preset <name> <structure_json> <drafts_dir> or wb conf"
+            "run wb preset save <name> structure <structure_json> drafts <drafts_dir> "
+            "or wb config"
         )
     if not isinstance(raw, dict):
         die(f"preset {name!r} must be a JSON object")
@@ -224,29 +233,6 @@ def resolve_preset(name: str) -> BookTarget:
         drafts_dir=resolve_path(drafts, base),
         preset_name=name,
     )
-
-
-def parse_target(argv: list[str]) -> tuple[BookTarget, str, list[str]]:
-    if not argv:
-        die("valid shape: wb <structure_json> <drafts_dir> [status|ls|show|export]")
-
-    if len(argv) >= 2 and argv[1] not in TARGET_COMMANDS:
-        target = BookTarget(
-            structure_path=resolve_arg_path(argv[0]),
-            drafts_dir=resolve_arg_path(argv[1]),
-        )
-        rest = argv[2:]
-    else:
-        target = resolve_preset(argv[0])
-        rest = argv[1:]
-
-    if not rest or rest[0].startswith("-"):
-        return target, "write", rest
-
-    command = TARGET_COMMANDS.get(rest[0])
-    if command is None:
-        die(f"unknown command: {rest[0]}")
-    return target, command, rest[1:]
 
 
 def load_structure(path: Path) -> dict[str, Any]:
@@ -438,16 +424,47 @@ def print_target(target: BookTarget) -> None:
     print(f"drafts   : {muted_path(target.drafts_dir)}")
 
 
+def parse_structure_drafts(args: list[str], shape: str) -> tuple[BookTarget, list[str]]:
+    if len(args) < 3 or args[1] != "drafts":
+        die(shape)
+    return (
+        BookTarget(
+            structure_path=resolve_arg_path(args[0]),
+            drafts_dir=resolve_arg_path(args[2]),
+        ),
+        args[3:],
+    )
+
+
+def parse_export_args(args: list[str], shape: str) -> tuple[bool, Path | None]:
+    include_all = False
+    output_path: Path | None = None
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "all":
+            include_all = True
+            i += 1
+            continue
+        if token == "to":
+            if output_path is not None:
+                die(shape)
+            if i + 1 >= len(args):
+                die("to requires an output path")
+            output_path = resolve_arg_path(args[i + 1])
+            i += 2
+            continue
+        die(shape)
+    return include_all, output_path
+
+
 def command_write(target: BookTarget, args: list[str]) -> int:
-    once = False
-    rest: list[str] = []
-    for token in args:
-        if token == "-1":
-            once = True
-        else:
-            rest.append(token)
-    if rest:
-        die("valid shape: wb <structure_json> <drafts_dir> [-1] or wb <preset> [-1]")
+    if args == ["first"]:
+        once = True
+    elif not args:
+        once = False
+    else:
+        die("valid shape: wb write <structure_json> drafts <drafts_dir> [first]")
 
     structure, items = load_target(target)
 
@@ -481,7 +498,7 @@ def command_write(target: BookTarget, args: list[str]) -> int:
 
 def command_status(target: BookTarget, args: list[str]) -> int:
     if args:
-        die("valid shape: wb <structure_json> <drafts_dir> status or wb <preset> status")
+        die("valid shape: wb use <preset> status")
     structure, items = load_target(target)
     complete = [item for item in items if item_complete(item)]
     current = next_incomplete(items)
@@ -501,7 +518,7 @@ def command_status(target: BookTarget, args: list[str]) -> int:
 
 def command_list(target: BookTarget, args: list[str]) -> int:
     if args:
-        die("valid shape: wb <structure_json> <drafts_dir> ls or wb <preset> ls")
+        die("valid shape: wb use <preset> list")
     _, items = load_target(target)
     for item in items:
         count = char_count(item.path)
@@ -515,7 +532,7 @@ def command_list(target: BookTarget, args: list[str]) -> int:
 
 def command_show(target: BookTarget, args: list[str]) -> int:
     if args:
-        die("valid shape: wb <structure_json> <drafts_dir> show or wb <preset> show")
+        die("valid shape: wb use <preset> show")
     _, items = load_target(target)
     item = next_incomplete(items)
     if item is None:
@@ -532,28 +549,10 @@ def command_show(target: BookTarget, args: list[str]) -> int:
 
 
 def command_export(target: BookTarget, args: list[str]) -> int:
-    include_all = False
-    output_path: Path | None = None
-    rest: list[str] = []
-    i = 0
-    while i < len(args):
-        token = args[i]
-        if token == "-all":
-            include_all = True
-            i += 1
-        elif token == "-o":
-            if i + 1 >= len(args):
-                die("-o requires an output path")
-            output_path = resolve_arg_path(args[i + 1])
-            i += 2
-        else:
-            rest.append(token)
-            i += 1
-    if rest:
-        die(
-            "valid shape: wb <structure_json> <drafts_dir> export [-all] [-o <output_md>] "
-            "or wb <preset> export [-all] [-o <output_md>]"
-        )
+    include_all, output_path = parse_export_args(
+        args,
+        "valid shape: wb export <structure_json> drafts <drafts_dir> [all] [to <output_md>]",
+    )
 
     structure, items = load_target(target)
     grouped: dict[int, list[WorkItem]] = {}
@@ -597,14 +596,14 @@ def command_init(args: list[str]) -> int:
 
 
 def command_preset(args: list[str]) -> int:
-    if len(args) != 3:
-        die("valid shape: wb preset <name> <structure_json> <drafts_dir>")
-    name = args[0].strip()
+    if len(args) != 6 or args[0] != "save" or args[2] != "structure" or args[4] != "drafts":
+        die("valid shape: wb preset save <name> structure <structure_json> drafts <drafts_dir>")
+    name = args[1].strip()
     if not name:
         die("preset name must not be empty")
 
-    structure_path = resolve_arg_path(args[1])
-    drafts_dir = resolve_arg_path(args[2])
+    structure_path = resolve_arg_path(args[3])
+    drafts_dir = resolve_arg_path(args[5])
     config = load_app_config()
     presets = config.setdefault("presets", {})
     if not isinstance(presets, dict):
@@ -621,43 +620,88 @@ def command_preset(args: list[str]) -> int:
     return 0
 
 
+def command_config(args: list[str]) -> int:
+    if args:
+        die("valid shape: wb config")
+    path = app_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(APP_CONFIG_BOOTSTRAP, encoding="utf-8")
+    return subprocess.run([*resolve_editor_command(), str(path)], check=False).returncode
+
+
+def command_use(args: list[str]) -> int:
+    if not args:
+        die("valid shape: wb use <preset> [status|list|show|export]")
+    target = resolve_preset(args[0])
+    if len(args) == 1:
+        return command_write(target, [])
+    action = args[1]
+    rest = args[2:]
+    if action == "status":
+        return command_status(target, rest)
+    if action == "list":
+        return command_list(target, rest)
+    if action == "show":
+        return command_show(target, rest)
+    if action == "export":
+        include_all, output_path = parse_export_args(
+            rest,
+            "valid shape: wb use <preset> export [all] [to <output_md>]",
+        )
+        export_args: list[str] = []
+        if include_all:
+            export_args.append("all")
+        if output_path is not None:
+            export_args.extend(["to", str(output_path)])
+        return command_export(target, export_args)
+    die("valid shape: wb use <preset> [status|list|show|export]")
+    return 2
+
+
 def dispatch(argv: list[str]) -> int:
     if not argv:
-        die("valid shape: wb <structure_json> <drafts_dir> or wb <preset>")
+        die("valid shape: wb write <structure_json> drafts <drafts_dir> [first]")
 
     command = argv[0]
     if command == "init":
         return command_init(argv[1:])
     if command == "preset":
         return command_preset(argv[1:])
+    if command == "config":
+        return command_config(argv[1:])
+    if command == "write":
+        target, rest = parse_structure_drafts(
+            argv[1:],
+            "valid shape: wb write <structure_json> drafts <drafts_dir> [first]",
+        )
+        return command_write(target, rest)
+    if command == "use":
+        return command_use(argv[1:])
+    if command == "export":
+        target, rest = parse_structure_drafts(
+            argv[1:],
+            "valid shape: wb export <structure_json> drafts <drafts_dir> [all] [to <output_md>]",
+        )
+        return command_export(target, rest)
 
-    target, action, args = parse_target(argv)
-    if action == "write":
-        return command_write(target, args)
-    if action == "status":
-        return command_status(target, args)
-    if action == "list":
-        return command_list(target, args)
-    if action == "show":
-        return command_show(target, args)
-    if action == "export":
-        return command_export(target, args)
-
-    die(f"unknown command: {action}")
+    die("valid shape: wb init [structure_json] | wb write <structure_json> drafts <drafts_dir> [first]")
     return 2
 
 
 def main(argv: list[str] | None = None) -> int:
-    spec = AppSpec(
-        app_name=APP_NAME,
-        version=__version__,
-        help_text=HELP_TEXT,
-        install_script_path=resolve_install_script_path(__file__),
-        no_args_mode="help",
-        config_path_factory=app_config_path,
-        config_bootstrap_text=APP_CONFIG_BOOTSTRAP,
-    )
-    return run_app(spec, sys.argv[1:] if argv is None else argv, dispatch)
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args == ["-h"]:
+        print_help()
+        return 0
+    if args == ["-v"]:
+        print(__version__)
+        return 0
+    if args == ["-u"]:
+        return upgrade_app()
+    if args[0] in {"-h", "-v", "-u"}:
+        die("global flags must be used alone")
+    return dispatch(args)
 
 
 if __name__ == "__main__":

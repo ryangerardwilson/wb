@@ -112,8 +112,10 @@ class InstallContractTests(unittest.TestCase):
             self.assertTrue(internal_launcher.exists())
             self.assertTrue(public_launcher.exists())
             self.assertEqual(bashrc_path.read_text(encoding="utf-8"), "# existing shell config\n")
-            self.assertIn("# Managed by rgw_cli_contract local-bin launcher", public_launcher.read_text(encoding="utf-8"))
-            self.assertIn(f'exec "{internal_launcher}" "$@"', public_launcher.read_text(encoding="utf-8"))
+            public_text = public_launcher.read_text(encoding="utf-8")
+            self.assertIn("# Managed by wb local-bin launcher", public_text)
+            self.assertNotIn("shared CLI contract", public_text)
+            self.assertIn(f'exec "{internal_launcher}" "$@"', public_text)
             version = subprocess.run(
                 [str(public_launcher), "-v"],
                 capture_output=True,

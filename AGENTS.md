@@ -2,8 +2,8 @@
 
 ## Workspace Defaults
 
-- Follow `/home/ryan/Documents/agent_context/CLI_TUI_STYLE_GUIDE.md` for CLI taste and help shape.
-- Follow `/home/ryan/Documents/agent_context/CANONICAL_REFERENCE_IMPLEMENTATION_FOR_CLI_AND_TUI_APPS.md` for launcher, installer, and release behavior.
+- Follow `/home/ryan/Subagents/cpo/CLI_TUI_STYLE_GUIDE.md` for CLI taste and help shape.
+- Follow `/home/ryan/Subagents/cto/CANONICAL_REFERENCE_IMPLEMENTATION_FOR_CLI_AND_TUI_APPS.md` for launcher, installer, and release behavior.
 
 ## Scope
 
@@ -15,7 +15,7 @@
 ## Config
 
 - App config is XDG compliant: `$XDG_CONFIG_HOME/wb/config.json`, falling back to `~/.config/wb/config.json`.
-- `wb conf` opens the app config.
+- `wb config` opens the app config.
 - The app config may contain generic defaults and machine-local presets only:
   - `extension`
   - `min_chars`
@@ -25,15 +25,18 @@
 
 ## Command Shape
 
-- Keep the primary target explicit:
-  - `wb <structure_json> <drafts_dir>`
-  - `wb <structure_json> <drafts_dir> -1`
-  - `wb <structure_json> <drafts_dir> status`
-  - `wb <structure_json> <drafts_dir> ls`
-  - `wb <structure_json> <drafts_dir> show`
-  - `wb <structure_json> <drafts_dir> export -o manuscript.md`
-- Preserve named presets:
-  - `wb preset "an eye for an eye" <structure_json> <drafts_dir>`
-  - `wb "an eye for an eye"`
-  - `wb "an eye for an eye" status`
-- No-arg `wb` prints help through the shared CLI contract.
+- Keep the primary target explicit and declarative:
+  - `wb init [structure_json]`
+  - `wb write <structure_json> drafts <drafts_dir> [first]`
+  - `wb export <structure_json> drafts <drafts_dir> [all] [to <output_md>]`
+  - `wb config`
+- Preserve named presets through the declarative preset surface:
+  - `wb preset save "an eye for an eye" structure <structure_json> drafts <drafts_dir>`
+  - `wb use "an eye for an eye"`
+  - `wb use "an eye for an eye" status`
+  - `wb use "an eye for an eye" list`
+  - `wb use "an eye for an eye" show`
+  - `wb use "an eye for an eye" export [all] [to <output_md>]`
+- Do not reintroduce the old direct path, bare preset, `conf`, `ls`, `-1`,
+  `-all`, or `-o` command forms.
+- No-arg `wb` prints help through the app-local CLI contract.

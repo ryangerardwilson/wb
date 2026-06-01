@@ -50,38 +50,32 @@ wb init ./structure.json
 Write the next proposition with explicit paths:
 
 ```bash
-wb ./structure.json ./drafts
-wb ./structure.json ./drafts -1
+wb write ./structure.json drafts ./drafts
+wb write ./structure.json drafts ./drafts first
 ```
 
-Inspect progress:
+Save a named preset and inspect progress from any directory:
 
 ```bash
-wb ./structure.json ./drafts status
-wb ./structure.json ./drafts ls
-wb ./structure.json ./drafts show
+wb preset save "an eye for an eye" structure /path/to/structure.json drafts /path/to/drafts
+wb use "an eye for an eye"
+wb use "an eye for an eye" status
+wb use "an eye for an eye" list
+wb use "an eye for an eye" show
 ```
 
 Export completed draft bodies:
 
 ```bash
-wb ./structure.json ./drafts export -o manuscript.md
-wb ./structure.json ./drafts export -all
-```
-
-Save a named preset and use it from any directory:
-
-```bash
-wb preset "an eye for an eye" /path/to/structure.json /path/to/drafts
-wb "an eye for an eye"
-wb "an eye for an eye" status
-wb "an eye for an eye" export -o manuscript.md
+wb export ./structure.json drafts ./drafts to manuscript.md
+wb export ./structure.json drafts ./drafts all
+wb use "an eye for an eye" export to manuscript.md
 ```
 
 Edit the app config directly:
 
 ```bash
-wb conf
+wb config
 ```
 
 ## Config

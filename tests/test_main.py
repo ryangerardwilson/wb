@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -61,17 +62,26 @@ class MainTests(unittest.TestCase):
         self.assertIn("flags:", help_result.stdout)
         self.assertIn("features:", help_result.stdout)
         self.assertIn("wb -u", help_result.stdout)
-        self.assertIn('wb "an eye for an eye" status', help_result.stdout)
+        self.assertIn('wb use "an eye for an eye" status', help_result.stdout)
         self.assertNotIn("usage:", help_result.stdout)
         self.assertNotIn("--help", help_result.stdout)
+        self.assertNotIn('wb "an eye for an eye"', help_result.stdout)
         self.assertEqual(version_result.stdout, "0.0.0\n")
 
-    def test_conf_creates_xdg_app_config(self) -> None:
+    def test_upgrade_delegates_to_installer(self) -> None:
+        completed = subprocess.CompletedProcess(["bash"], 0)
+        with mock.patch.object(wb_main.subprocess, "run", return_value=completed) as run:
+            result = wb_main.main(["-u"])
+
+        self.assertEqual(result, 0)
+        run.assert_called_once_with(["bash", str(wb_main.INSTALL_SCRIPT), "-u"], check=False)
+
+    def test_config_creates_xdg_app_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             xdg = Path(tmp) / "xdg"
             env = {"XDG_CONFIG_HOME": str(xdg), "EDITOR": "true", "VISUAL": ""}
 
-            result = run_wb("conf", cwd=ROOT, env=env)
+            result = run_wb("config", cwd=ROOT, env=env)
             config_path = xdg / "wb" / "config.json"
 
             self.assertEqual(result.returncode, 0)
@@ -79,15 +89,27 @@ class MainTests(unittest.TestCase):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(config, {"extension": "md", "min_chars": 500, "presets": {}})
 
-    def test_init_and_direct_status_use_explicit_structure_and_drafts(self) -> None:
+    def test_init_and_preset_status_use_explicit_structure_and_drafts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
             env = {"XDG_CONFIG_HOME": str(cwd / "xdg")}
 
             init_result = run_wb("init", "structure.json", cwd=cwd, env=env)
-            status_result = run_wb("structure.json", "drafts", "status", cwd=cwd, env=env)
+            preset_result = run_wb(
+                "preset",
+                "save",
+                "small",
+                "structure",
+                "structure.json",
+                "drafts",
+                "drafts",
+                cwd=cwd,
+                env=env,
+            )
+            status_result = run_wb("use", "small", "status", cwd=cwd, env=env)
 
         self.assertEqual(init_result.returncode, 0)
+        self.assertEqual(preset_result.returncode, 0)
         self.assertEqual(status_result.returncode, 0)
         self.assertIn("Untitled Book", status_result.stdout)
         self.assertIn("structure: structure.json", status_result.stdout)
@@ -106,13 +128,16 @@ class MainTests(unittest.TestCase):
 
             preset_result = run_wb(
                 "preset",
+                "save",
                 "an eye for an eye",
+                "structure",
                 str(structure),
+                "drafts",
                 str(drafts),
                 cwd=ROOT,
                 env=env,
             )
-            status_result = run_wb("an eye for an eye", "status", cwd=ROOT, env=env)
+            status_result = run_wb("use", "an eye for an eye", "status", cwd=ROOT, env=env)
             config = json.loads((xdg / "wb" / "config.json").read_text(encoding="utf-8"))
 
         self.assertEqual(preset_result.returncode, 0)
@@ -139,7 +164,7 @@ class MainTests(unittest.TestCase):
                 "VISUAL": "",
             }
 
-            result = run_wb(str(structure), str(drafts), "-1", cwd=cwd, env=env)
+            result = run_wb("write", str(structure), "drafts", str(drafts), "first", cwd=cwd, env=env)
             draft = drafts / "00-one" / "01.md"
 
             self.assertEqual(result.returncode, 0)
@@ -174,8 +199,20 @@ class MainTests(unittest.TestCase):
             )
             env = {"XDG_CONFIG_HOME": str(cwd / "xdg")}
 
-            status_result = run_wb(str(structure), str(drafts), "status", cwd=cwd, env=env)
+            preset_result = run_wb(
+                "preset",
+                "save",
+                "small",
+                "structure",
+                str(structure),
+                "drafts",
+                str(drafts),
+                cwd=cwd,
+                env=env,
+            )
+            status_result = run_wb("use", "small", "status", cwd=cwd, env=env)
 
+        self.assertEqual(preset_result.returncode, 0)
         self.assertEqual(status_result.returncode, 0)
         self.assertIn("progress : 1/2 (50%)", status_result.stdout)
         self.assertIn("next     : One / 2", status_result.stdout)
@@ -196,7 +233,7 @@ class MainTests(unittest.TestCase):
                 "VISUAL": "",
             }
 
-            result = run_wb(str(structure), str(drafts), cwd=cwd, env=env)
+            result = run_wb("write", str(structure), "drafts", str(drafts), cwd=cwd, env=env)
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("incomplete 5/20", result.stdout)
