@@ -35,9 +35,9 @@ source ~/.bashrc
 ## Usage
 
 ```bash
-wb -h
-wb -v
-wb -u
+wb help
+wb version
+wb upgrade
 ```
 
 Create a generic book structure file:

@@ -33,12 +33,12 @@ INSTALL_SCRIPT = (
 HELP_TEXT = """Writer's Block
 write long work one proposition at a time
 
-flags:
-  wb -h
+global actions:
+  wb help
     show this help
-  wb -v
+  wb version
     print the installed version
-  wb -u
+  wb upgrade
     upgrade to the latest release
 
 features:
@@ -111,7 +111,7 @@ def upgrade_app() -> int:
     if not INSTALL_SCRIPT.exists():
         print(f"install.sh is missing: {INSTALL_SCRIPT}", file=sys.stderr)
         return 1
-    return subprocess.run(["bash", str(INSTALL_SCRIPT), "-u"], check=False).returncode
+    return subprocess.run(["bash", str(INSTALL_SCRIPT), "upgrade"], check=False).returncode
 
 
 @dataclass(frozen=True)
@@ -691,16 +691,16 @@ def dispatch(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args or args == ["-h"]:
+    if not args or args == ["help"]:
         print_help()
         return 0
-    if args == ["-v"]:
+    if args == ["version"]:
         print(__version__)
         return 0
-    if args == ["-u"]:
+    if args == ["upgrade"]:
         return upgrade_app()
-    if args[0] in {"-h", "-v", "-u"}:
-        die("global flags must be used alone")
+    if args[0] in {"help", "version", "upgrade"}:
+        die("global actions must be used alone")
     return dispatch(args)
 
 

@@ -52,16 +52,16 @@ class MainTests(unittest.TestCase):
             env = {"XDG_CONFIG_HOME": str(Path(tmp) / "config")}
 
             bare_result = run_wb(cwd=ROOT, env=env)
-            help_result = run_wb("-h", cwd=ROOT, env=env)
-            version_result = run_wb("-v", cwd=ROOT, env=env)
+            help_result = run_wb("help", cwd=ROOT, env=env)
+            version_result = run_wb("version", cwd=ROOT, env=env)
 
         self.assertEqual(bare_result.returncode, 0)
         self.assertEqual(help_result.returncode, 0)
         self.assertEqual(bare_result.stdout, help_result.stdout)
         self.assertIn("Writer's Block", help_result.stdout)
-        self.assertIn("flags:", help_result.stdout)
+        self.assertIn("global actions:", help_result.stdout)
         self.assertIn("features:", help_result.stdout)
-        self.assertIn("wb -u", help_result.stdout)
+        self.assertIn("wb upgrade", help_result.stdout)
         self.assertIn('wb use "an eye for an eye" status', help_result.stdout)
         self.assertNotIn("usage:", help_result.stdout)
         self.assertNotIn("--help", help_result.stdout)
@@ -71,10 +71,10 @@ class MainTests(unittest.TestCase):
     def test_upgrade_delegates_to_installer(self) -> None:
         completed = subprocess.CompletedProcess(["bash"], 0)
         with mock.patch.object(wb_main.subprocess, "run", return_value=completed) as run:
-            result = wb_main.main(["-u"])
+            result = wb_main.main(["upgrade"])
 
         self.assertEqual(result, 0)
-        run.assert_called_once_with(["bash", str(wb_main.INSTALL_SCRIPT), "-u"], check=False)
+        run.assert_called_once_with(["bash", str(wb_main.INSTALL_SCRIPT), "upgrade"], check=False)
 
     def test_config_creates_xdg_app_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
