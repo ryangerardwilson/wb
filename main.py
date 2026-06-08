@@ -24,6 +24,9 @@ OLD_VIM_WRAP_MODELINE = "<!-- vim: setlocal textwidth=79 colorcolumn=79 wrap lin
 SCAFFOLD_WIDTH = 79
 ANSI_GRAY = "\033[38;5;245m"
 ANSI_RESET = "\033[0m"
+TUI_PAIR_NORMAL = 1
+TUI_PAIR_MUTED = 2
+TUI_PAIR_STRONG = 3
 INSTALL_SCRIPT = (
     Path(sys.executable).resolve().parent / "install.sh"
     if getattr(sys, "frozen", False)
@@ -806,6 +809,38 @@ def command_config(args: list[str]) -> int:
     return subprocess.run([*resolve_editor_command(), str(path)], check=False).returncode
 
 
+def setup_tui_screen(stdscr: Any, curses_module: Any) -> dict[str, int]:
+    attrs = {
+        "normal": 0,
+        "muted": getattr(curses_module, "A_DIM", 0),
+        "strong": getattr(curses_module, "A_BOLD", 0),
+        "selected": getattr(curses_module, "A_BOLD", 0),
+    }
+
+    try:
+        curses_module.curs_set(0)
+    except Exception:
+        pass
+
+    try:
+        curses_module.start_color()
+        if curses_module.has_colors():
+            curses_module.init_pair(TUI_PAIR_NORMAL, curses_module.COLOR_WHITE, curses_module.COLOR_BLACK)
+            curses_module.init_pair(TUI_PAIR_MUTED, curses_module.COLOR_WHITE, curses_module.COLOR_BLACK)
+            curses_module.init_pair(TUI_PAIR_STRONG, curses_module.COLOR_WHITE, curses_module.COLOR_BLACK)
+            attrs = {
+                "normal": curses_module.color_pair(TUI_PAIR_NORMAL),
+                "muted": curses_module.color_pair(TUI_PAIR_MUTED) | getattr(curses_module, "A_DIM", 0),
+                "strong": curses_module.color_pair(TUI_PAIR_STRONG) | getattr(curses_module, "A_BOLD", 0),
+                "selected": curses_module.color_pair(TUI_PAIR_STRONG) | getattr(curses_module, "A_BOLD", 0),
+            }
+            stdscr.bkgd(" ", attrs["normal"])
+    except Exception:
+        pass
+
+    return attrs
+
+
 def screen_add(stdscr: Any, y: int, x: int, text: str, attr: int = 0) -> None:
     height, width = stdscr.getmaxyx()
     if y < 0 or y >= height or x < 0 or x >= width:
@@ -819,7 +854,13 @@ def screen_add(stdscr: Any, y: int, x: int, text: str, attr: int = 0) -> None:
         return
 
 
-def tui_project_picker(stdscr: Any, curses_module: Any, projects: list[TuiProject], selected: int) -> int | None:
+def tui_project_picker(
+    stdscr: Any,
+    curses_module: Any,
+    projects: list[TuiProject],
+    selected: int,
+    attrs: dict[str, int],
+) -> int | None:
     selected = max(0, min(selected, len(projects) - 1))
     while True:
         height, width = stdscr.getmaxyx()
@@ -827,17 +868,17 @@ def tui_project_picker(stdscr: Any, curses_module: Any, projects: list[TuiProjec
         offset = min(max(0, selected - body_height // 2), max(len(projects) - body_height, 0))
 
         stdscr.erase()
-        screen_add(stdscr, 0, 0, "wb books")
-        screen_add(stdscr, 1, 0, "enter select  j/k move  q quit")
+        screen_add(stdscr, 0, 0, "wb books", attrs["strong"])
+        screen_add(stdscr, 1, 0, "enter select  j/k move  q quit", attrs["muted"])
 
         for row, index in enumerate(range(offset, min(offset + body_height, len(projects))), start=3):
             marker = ">" if index == selected else " "
             line = f"{marker} {tui_project_row(projects[index])}"
-            attr = curses_module.A_REVERSE if index == selected else 0
+            attr = attrs["selected"] if index == selected else attrs["normal"]
             screen_add(stdscr, row, 0, line, attr)
 
         if height > 0:
-            screen_add(stdscr, height - 1, 0, f"{len(projects)} project(s)")
+            screen_add(stdscr, height - 1, 0, f"{len(projects)} project(s)", attrs["muted"])
         stdscr.refresh()
         key = stdscr.getch()
 
@@ -853,7 +894,7 @@ def tui_project_picker(stdscr: Any, curses_module: Any, projects: list[TuiProjec
             return selected
 
 
-def tui_project_reader(stdscr: Any, curses_module: Any, project: TuiProject) -> str:
+def tui_project_reader(stdscr: Any, curses_module: Any, project: TuiProject, attrs: dict[str, int]) -> str:
     index = project.current_index
     scroll = 0
     while True:
@@ -865,14 +906,14 @@ def tui_project_reader(stdscr: Any, curses_module: Any, project: TuiProject) -> 
         scroll = min(scroll, max_scroll)
 
         stdscr.erase()
-        screen_add(stdscr, 0, 0, tui_item_header(project, index))
-        screen_add(stdscr, 1, 0, "n next  p previous  j/k scroll  b books  q quit")
+        screen_add(stdscr, 0, 0, tui_item_header(project, index), attrs["strong"])
+        screen_add(stdscr, 1, 0, "n next  p previous  j/k scroll  b books  q quit", attrs["muted"])
 
         for row, line in enumerate(lines[scroll : scroll + content_height], start=2):
-            screen_add(stdscr, row, 0, line)
+            screen_add(stdscr, row, 0, line, attrs["normal"])
 
         if height > 0:
-            screen_add(stdscr, height - 1, 0, f"scroll {scroll}/{max_scroll}")
+            screen_add(stdscr, height - 1, 0, f"scroll {scroll}/{max_scroll}", attrs["muted"])
         stdscr.refresh()
         key = stdscr.getch()
 
@@ -903,17 +944,14 @@ def tui_project_reader(stdscr: Any, curses_module: Any, project: TuiProject) -> 
 
 
 def run_tui(stdscr: Any, curses_module: Any, projects: list[TuiProject]) -> int:
-    try:
-        curses_module.curs_set(0)
-    except Exception:
-        pass
+    attrs = setup_tui_screen(stdscr, curses_module)
     selected = 0
     while True:
-        picked = tui_project_picker(stdscr, curses_module, projects, selected)
+        picked = tui_project_picker(stdscr, curses_module, projects, selected, attrs)
         if picked is None:
             return 0
         selected = picked
-        result = tui_project_reader(stdscr, curses_module, projects[picked])
+        result = tui_project_reader(stdscr, curses_module, projects[picked], attrs)
         if result == "quit":
             return 0
 
@@ -933,7 +971,10 @@ def command_tui(args: list[str]) -> int:
 
     import curses
 
-    return curses.wrapper(lambda stdscr: run_tui(stdscr, curses, projects))
+    try:
+        return curses.wrapper(lambda stdscr: run_tui(stdscr, curses, projects))
+    except KeyboardInterrupt:
+        return 0
 
 
 def command_use(args: list[str]) -> int:

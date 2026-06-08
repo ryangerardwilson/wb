@@ -240,6 +240,84 @@ class MainTests(unittest.TestCase):
         self.assertIn("2/2 todo 0/5", project_header)
         self.assertIn("first body", project_lines)
 
+    def test_tui_handles_keyboard_interrupt_without_traceback(self) -> None:
+        class FakeCurses:
+            def wrapper(self, callback):
+                raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            xdg = cwd / "xdg"
+            structure = cwd / "structure.json"
+            drafts = cwd / "drafts"
+            write_structure(structure)
+            env = {"XDG_CONFIG_HOME": str(xdg)}
+            preset_result = run_wb(
+                "preset",
+                "save",
+                "small",
+                "structure",
+                str(structure),
+                "drafts",
+                str(drafts),
+                cwd=cwd,
+                env=env,
+            )
+
+            with (
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}),
+                mock.patch.dict(sys.modules, {"curses": FakeCurses()}),
+                mock.patch.object(sys.stdin, "isatty", return_value=True),
+                mock.patch.object(sys.stdout, "isatty", return_value=True),
+            ):
+                result = wb_main.command_tui([])
+
+        self.assertEqual(preset_result.returncode, 0)
+        self.assertEqual(result, 0)
+
+    def test_tui_setup_uses_black_background_without_reverse_video(self) -> None:
+        class FakeScreen:
+            def __init__(self) -> None:
+                self.background = None
+
+            def bkgd(self, char: str, attr: int) -> None:
+                self.background = (char, attr)
+
+        class FakeCurses:
+            COLOR_WHITE = 7
+            COLOR_BLACK = 0
+            A_DIM = 0x10
+            A_BOLD = 0x20
+            A_REVERSE = 0x40
+
+            def __init__(self) -> None:
+                self.pairs: list[tuple[int, int, int]] = []
+
+            def curs_set(self, value: int) -> None:
+                self.cursor = value
+
+            def start_color(self) -> None:
+                self.started = True
+
+            def has_colors(self) -> bool:
+                return True
+
+            def init_pair(self, pair: int, fg: int, bg: int) -> None:
+                self.pairs.append((pair, fg, bg))
+
+            def color_pair(self, pair: int) -> int:
+                return pair * 100
+
+        screen = FakeScreen()
+        fake_curses = FakeCurses()
+
+        attrs = wb_main.setup_tui_screen(screen, fake_curses)
+
+        self.assertEqual(fake_curses.pairs[0], (wb_main.TUI_PAIR_NORMAL, fake_curses.COLOR_WHITE, fake_curses.COLOR_BLACK))
+        self.assertEqual(screen.background, (" ", attrs["normal"]))
+        self.assertEqual(attrs["selected"] & fake_curses.A_REVERSE, 0)
+        self.assertTrue(attrs["selected"] & fake_curses.A_BOLD)
+
     def test_write_counts_only_below_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
