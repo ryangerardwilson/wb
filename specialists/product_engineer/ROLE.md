@@ -1,9 +1,23 @@
-# wb Agent Guide
+# Product Engineer Role
 
-## Workspace Defaults
+## Purpose
 
-- Follow `/home/ryan/Subagents/cpo/CLI_TUI_STYLE_GUIDE.md` for CLI taste and help shape.
-- Follow `/home/ryan/Subagents/cto/CANONICAL_REFERENCE_IMPLEMENTATION_FOR_CLI_AND_TUI_APPS.md` for launcher, installer, and release behavior.
+Own wb-specific facts that should not live in root generalists.
+
+## Load Guidance
+
+Load this file for `wb` implementation, CLI/TUI, installer, release, storage, configuration, or project-specific product work.
+
+Root generalists own role behavior. This file owns only project facts and
+repo-local operating constraints.
+
+## Owns
+
+- repo-local product and implementation facts
+- CLI/TUI contract, command grammar, config, storage, and installer constraints
+- release, upgrade, and verification expectations specific to this app
+
+## Project Context
 
 ## Scope
 
@@ -29,6 +43,7 @@
   - `wb init [structure_json]`
   - `wb write <structure_json> drafts <drafts_dir> [first]`
   - `wb export <structure_json> drafts <drafts_dir> [all] [to <output_md>]`
+  - `wb list`
   - `wb config`
 - Preserve named presets through the declarative preset surface:
   - `wb preset save "an eye for an eye" structure <structure_json> drafts <drafts_dir>`

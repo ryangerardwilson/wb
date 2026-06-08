@@ -38,6 +38,8 @@ global actions:
     show this help
   wb version
     print the installed version
+  wb list
+    list saved wb projects
   wb upgrade
     upgrade to the latest release
 
@@ -516,6 +518,65 @@ def command_status(target: BookTarget, args: list[str]) -> int:
     return 0
 
 
+def command_project_list(args: list[str]) -> int:
+    if args:
+        die("valid shape: wb list")
+
+    config = load_app_config()
+    presets = config.get("presets", {})
+    if not isinstance(presets, dict):
+        die("app config presets must be a JSON object")
+    if not presets:
+        print("no wb projects saved")
+        print("save one with: wb preset save <name> structure <structure_json> drafts <drafts_dir>")
+        return 0
+
+    print("wb projects")
+    base = app_config_path().parent
+    for index, name in enumerate(sorted(presets, key=str.casefold)):
+        raw = presets[name]
+        if index:
+            print()
+        print(name)
+
+        if not isinstance(raw, dict):
+            print("  status   : invalid preset")
+            print("  error    : preset must be a JSON object")
+            continue
+
+        structure = raw.get("structure")
+        drafts = raw.get("drafts")
+        if not isinstance(structure, str) or not structure.strip():
+            print("  status   : invalid preset")
+            print("  error    : missing structure path")
+            continue
+        if not isinstance(drafts, str) or not drafts.strip():
+            print("  status   : invalid preset")
+            print("  error    : missing drafts dir")
+            continue
+
+        target = BookTarget(
+            structure_path=resolve_path(structure, base),
+            drafts_dir=resolve_path(drafts, base),
+            preset_name=name,
+        )
+        structure_data, items = load_target(target)
+        complete = [item for item in items if item_complete(item)]
+        current = next_incomplete(items)
+        percent = round((len(complete) / len(items)) * 100) if items else 0
+
+        print(f"  title    : {structure_data.get('title', 'Untitled')}")
+        print(f"  progress : {len(complete)}/{len(items)} ({percent}%)")
+        if current is None:
+            print("  next     : none")
+        else:
+            print(f"  next     : {current.chapter_title} / {current.proposition_index}")
+            print(f"  chars    : {char_count(current.path)}/{current.min_chars}")
+        print(f"  structure: {muted_path(target.structure_path)}")
+        print(f"  drafts   : {muted_path(target.drafts_dir)}")
+    return 0
+
+
 def command_list(target: BookTarget, args: list[str]) -> int:
     if args:
         die("valid shape: wb use <preset> list")
@@ -670,6 +731,8 @@ def dispatch(argv: list[str]) -> int:
         return command_preset(argv[1:])
     if command == "config":
         return command_config(argv[1:])
+    if command == "list":
+        return command_project_list(argv[1:])
     if command == "write":
         target, rest = parse_structure_drafts(
             argv[1:],

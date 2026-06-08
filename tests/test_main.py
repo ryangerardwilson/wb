@@ -61,6 +61,7 @@ class MainTests(unittest.TestCase):
         self.assertIn("Writer's Block", help_result.stdout)
         self.assertIn("global actions:", help_result.stdout)
         self.assertIn("features:", help_result.stdout)
+        self.assertIn("wb list", help_result.stdout)
         self.assertIn("wb upgrade", help_result.stdout)
         self.assertIn('wb use "an eye for an eye" status', help_result.stdout)
         self.assertNotIn("usage:", help_result.stdout)
@@ -148,6 +149,47 @@ class MainTests(unittest.TestCase):
         )
         self.assertIn("preset   : an eye for an eye", status_result.stdout)
         self.assertIn("progress : 0/1 (0%)", status_result.stdout)
+
+    def test_list_reports_saved_projects_from_xdg_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            xdg = cwd / "xdg"
+            structure = cwd / "structure.json"
+            drafts = cwd / "drafts"
+            write_structure(structure, min_chars=5, proposition_count=2)
+            target = wb_main.BookTarget(structure_path=structure, drafts_dir=drafts)
+            loaded = wb_main.load_structure(structure)
+            first_item = wb_main.work_items(target, loaded)[0]
+            wb_main.ensure_draft(first_item, 2)
+            first_item.path.write_text(
+                first_item.path.read_text(encoding="utf-8") + "\nfirst body",
+                encoding="utf-8",
+            )
+            env = {"XDG_CONFIG_HOME": str(xdg)}
+
+            preset_result = run_wb(
+                "preset",
+                "save",
+                "small",
+                "structure",
+                str(structure),
+                "drafts",
+                str(drafts),
+                cwd=cwd,
+                env=env,
+            )
+            list_result = run_wb("list", cwd=cwd, env=env)
+
+        self.assertEqual(preset_result.returncode, 0)
+        self.assertEqual(list_result.returncode, 0)
+        self.assertIn("wb projects", list_result.stdout)
+        self.assertIn("small", list_result.stdout)
+        self.assertIn("title    : Small", list_result.stdout)
+        self.assertIn("progress : 1/2 (50%)", list_result.stdout)
+        self.assertIn("next     : One / 2", list_result.stdout)
+        self.assertIn("chars    : 0/5", list_result.stdout)
+        self.assertIn("structure: structure.json", list_result.stdout)
+        self.assertIn("drafts   : drafts", list_result.stdout)
 
     def test_write_counts_only_below_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
