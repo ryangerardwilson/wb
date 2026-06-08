@@ -62,6 +62,7 @@ class MainTests(unittest.TestCase):
         self.assertIn("global actions:", help_result.stdout)
         self.assertIn("features:", help_result.stdout)
         self.assertIn("wb list", help_result.stdout)
+        self.assertIn("wb tui", help_result.stdout)
         self.assertIn("wb upgrade", help_result.stdout)
         self.assertIn('wb use "an eye for an eye" status', help_result.stdout)
         self.assertNotIn("usage:", help_result.stdout)
@@ -190,6 +191,54 @@ class MainTests(unittest.TestCase):
         self.assertIn("chars    : 0/5", list_result.stdout)
         self.assertIn("structure: structure.json", list_result.stdout)
         self.assertIn("drafts   : drafts", list_result.stdout)
+
+    def test_tui_loads_registered_projects_and_requires_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            xdg = cwd / "xdg"
+            structure = cwd / "structure.json"
+            drafts = cwd / "drafts"
+            write_structure(structure, min_chars=5, proposition_count=2)
+            target = wb_main.BookTarget(structure_path=structure, drafts_dir=drafts)
+            loaded = wb_main.load_structure(structure)
+            first_item = wb_main.work_items(target, loaded)[0]
+            wb_main.ensure_draft(first_item, 2)
+            first_item.path.write_text(
+                first_item.path.read_text(encoding="utf-8") + "\nfirst body",
+                encoding="utf-8",
+            )
+            env = {"XDG_CONFIG_HOME": str(xdg)}
+
+            preset_result = run_wb(
+                "preset",
+                "save",
+                "small",
+                "structure",
+                str(structure),
+                "drafts",
+                str(drafts),
+                cwd=cwd,
+                env=env,
+            )
+            tui_result = run_wb("tui", cwd=cwd, env=env)
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}):
+                projects = wb_main.load_tui_projects()
+                project = projects[0]
+                project_row = wb_main.tui_project_row(project)
+                project_header = wb_main.tui_item_header(project, project.current_index)
+                project_lines = "\n".join(wb_main.tui_item_lines(project, 0, 60))
+
+        self.assertEqual(preset_result.returncode, 0)
+        self.assertEqual(tui_result.returncode, 1)
+        self.assertIn("interactive terminal", tui_result.stderr)
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(project.name, "small")
+        self.assertEqual(project.title, "Small")
+        self.assertEqual(project.complete_count, 1)
+        self.assertEqual(project.current_index, 1)
+        self.assertEqual(project_row, "small  1/2 (50%)  Small")
+        self.assertIn("2/2 todo 0/5", project_header)
+        self.assertIn("first body", project_lines)
 
     def test_write_counts_only_below_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

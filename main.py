@@ -40,6 +40,8 @@ global actions:
     print the installed version
   wb list
     list saved wb projects
+  wb tui
+    select a saved book and browse drafts
   wb upgrade
     upgrade to the latest release
 
@@ -52,6 +54,10 @@ features:
   save a named preset
   # preset save <name> structure <structure_json> drafts <drafts_dir>
   wb preset save "an eye for an eye" structure ./structure.json drafts ./drafts
+
+  browse saved books in the terminal UI
+  # tui
+  wb tui
 
   open the next unfinished proposition in your editor
   # write <structure_json> drafts <drafts_dir> [first]
@@ -131,6 +137,16 @@ class WorkItem:
     proposition: str
     path: Path
     min_chars: int
+
+
+@dataclass(frozen=True)
+class TuiProject:
+    name: str
+    title: str
+    target: BookTarget
+    items: list[WorkItem]
+    complete_count: int
+    current_index: int
 
 
 def xdg_config_home() -> Path:
@@ -395,6 +411,105 @@ def next_incomplete(items: list[WorkItem]) -> WorkItem | None:
         if not item_complete(item):
             return item
     return None
+
+
+def target_from_preset_record(name: str, raw: Any, base: Path) -> BookTarget | None:
+    if not isinstance(raw, dict):
+        return None
+
+    structure = raw.get("structure")
+    drafts = raw.get("drafts")
+    if not isinstance(structure, str) or not structure.strip():
+        return None
+    if not isinstance(drafts, str) or not drafts.strip():
+        return None
+
+    return BookTarget(
+        structure_path=resolve_path(structure, base),
+        drafts_dir=resolve_path(drafts, base),
+        preset_name=name,
+    )
+
+
+def load_tui_projects() -> list[TuiProject]:
+    config = load_app_config()
+    presets = config.get("presets", {})
+    if not isinstance(presets, dict):
+        die("app config presets must be a JSON object")
+
+    projects: list[TuiProject] = []
+    base = app_config_path().parent
+    for name in sorted(presets, key=str.casefold):
+        target = target_from_preset_record(name, presets[name], base)
+        if target is None:
+            continue
+
+        structure, items = load_target(target)
+        complete = [item for item in items if item_complete(item)]
+        current = next_incomplete(items)
+        if current is None:
+            current_index = max(len(items) - 1, 0)
+        else:
+            current_index = items.index(current)
+        projects.append(
+            TuiProject(
+                name=name,
+                title=str(structure.get("title", "Untitled")),
+                target=target,
+                items=items,
+                complete_count=len(complete),
+                current_index=current_index,
+            )
+        )
+    return projects
+
+
+def status_word(item: WorkItem) -> str:
+    return "done" if item_complete(item) else "todo"
+
+
+def wrap_display_text(text: str, width: int) -> list[str]:
+    safe_width = max(width, 20)
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        if not raw_line.strip():
+            lines.append("")
+            continue
+        lines.extend(textwrap.wrap(raw_line, width=safe_width) or [""])
+    return lines
+
+
+def tui_project_row(project: TuiProject) -> str:
+    total = len(project.items)
+    percent = round((project.complete_count / total) * 100) if total else 0
+    return f"{project.name}  {project.complete_count}/{total} ({percent}%)  {project.title}"
+
+
+def tui_item_header(project: TuiProject, index: int) -> str:
+    item = project.items[index]
+    return (
+        f"{project.title} - {index + 1}/{len(project.items)} "
+        f"{status_word(item)} {char_count(item.path)}/{item.min_chars}"
+    )
+
+
+def tui_item_lines(project: TuiProject, index: int, width: int) -> list[str]:
+    item = project.items[index]
+    body = draft_body(item.path)
+    lines = [
+        f"{item.chapter_title} / {item.proposition_index}",
+        f"draft: {muted_path(item.path)}",
+        "",
+        "Proposition",
+        "",
+    ]
+    lines.extend(wrap_display_text(item.proposition, width))
+    lines.extend(["", "Draft", ""])
+    if body:
+        lines.extend(wrap_display_text(body, width))
+    else:
+        lines.append("(empty draft)")
+    return lines
 
 
 def resolve_editor_command() -> list[str]:
@@ -691,6 +806,136 @@ def command_config(args: list[str]) -> int:
     return subprocess.run([*resolve_editor_command(), str(path)], check=False).returncode
 
 
+def screen_add(stdscr: Any, y: int, x: int, text: str, attr: int = 0) -> None:
+    height, width = stdscr.getmaxyx()
+    if y < 0 or y >= height or x < 0 or x >= width:
+        return
+    max_chars = max(width - x - 1, 0)
+    if max_chars <= 0:
+        return
+    try:
+        stdscr.addnstr(y, x, text, max_chars, attr)
+    except Exception:
+        return
+
+
+def tui_project_picker(stdscr: Any, curses_module: Any, projects: list[TuiProject], selected: int) -> int | None:
+    selected = max(0, min(selected, len(projects) - 1))
+    while True:
+        height, width = stdscr.getmaxyx()
+        body_height = max(height - 4, 1)
+        offset = min(max(0, selected - body_height // 2), max(len(projects) - body_height, 0))
+
+        stdscr.erase()
+        screen_add(stdscr, 0, 0, "wb books")
+        screen_add(stdscr, 1, 0, "enter select  j/k move  q quit")
+
+        for row, index in enumerate(range(offset, min(offset + body_height, len(projects))), start=3):
+            marker = ">" if index == selected else " "
+            line = f"{marker} {tui_project_row(projects[index])}"
+            attr = curses_module.A_REVERSE if index == selected else 0
+            screen_add(stdscr, row, 0, line, attr)
+
+        if height > 0:
+            screen_add(stdscr, height - 1, 0, f"{len(projects)} project(s)")
+        stdscr.refresh()
+        key = stdscr.getch()
+
+        if key in (ord("q"), 27):
+            return None
+        if key in (ord("j"), curses_module.KEY_DOWN):
+            selected = min(selected + 1, len(projects) - 1)
+            continue
+        if key in (ord("k"), curses_module.KEY_UP):
+            selected = max(selected - 1, 0)
+            continue
+        if key in (10, 13, curses_module.KEY_ENTER):
+            return selected
+
+
+def tui_project_reader(stdscr: Any, curses_module: Any, project: TuiProject) -> str:
+    index = project.current_index
+    scroll = 0
+    while True:
+        height, width = stdscr.getmaxyx()
+        content_height = max(height - 3, 1)
+        content_width = max(width - 1, 20)
+        lines = tui_item_lines(project, index, content_width)
+        max_scroll = max(len(lines) - content_height, 0)
+        scroll = min(scroll, max_scroll)
+
+        stdscr.erase()
+        screen_add(stdscr, 0, 0, tui_item_header(project, index))
+        screen_add(stdscr, 1, 0, "n next  p previous  j/k scroll  b books  q quit")
+
+        for row, line in enumerate(lines[scroll : scroll + content_height], start=2):
+            screen_add(stdscr, row, 0, line)
+
+        if height > 0:
+            screen_add(stdscr, height - 1, 0, f"scroll {scroll}/{max_scroll}")
+        stdscr.refresh()
+        key = stdscr.getch()
+
+        if key in (ord("q"), 27):
+            return "quit"
+        if key == ord("b"):
+            return "books"
+        if key == ord("n"):
+            index = min(index + 1, len(project.items) - 1)
+            scroll = 0
+            continue
+        if key == ord("p"):
+            index = max(index - 1, 0)
+            scroll = 0
+            continue
+        if key in (ord("j"), curses_module.KEY_DOWN):
+            scroll = min(scroll + 1, max_scroll)
+            continue
+        if key in (ord("k"), curses_module.KEY_UP):
+            scroll = max(scroll - 1, 0)
+            continue
+        if key == ord("g"):
+            scroll = 0
+            continue
+        if key == ord("G"):
+            scroll = max_scroll
+            continue
+
+
+def run_tui(stdscr: Any, curses_module: Any, projects: list[TuiProject]) -> int:
+    try:
+        curses_module.curs_set(0)
+    except Exception:
+        pass
+    selected = 0
+    while True:
+        picked = tui_project_picker(stdscr, curses_module, projects, selected)
+        if picked is None:
+            return 0
+        selected = picked
+        result = tui_project_reader(stdscr, curses_module, projects[picked])
+        if result == "quit":
+            return 0
+
+
+def command_tui(args: list[str]) -> int:
+    if args:
+        die("valid shape: wb tui")
+
+    projects = load_tui_projects()
+    if not projects:
+        print("no wb projects saved")
+        print("save one with: wb preset save <name> structure <structure_json> drafts <drafts_dir>")
+        return 0
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        die("wb tui requires an interactive terminal", code=1)
+
+    import curses
+
+    return curses.wrapper(lambda stdscr: run_tui(stdscr, curses, projects))
+
+
 def command_use(args: list[str]) -> int:
     if not args:
         die("valid shape: wb use <preset> [status|list|show|export]")
@@ -733,6 +978,8 @@ def dispatch(argv: list[str]) -> int:
         return command_config(argv[1:])
     if command == "list":
         return command_project_list(argv[1:])
+    if command == "tui":
+        return command_tui(argv[1:])
     if command == "write":
         target, rest = parse_structure_drafts(
             argv[1:],
@@ -748,7 +995,10 @@ def dispatch(argv: list[str]) -> int:
         )
         return command_export(target, rest)
 
-    die("valid shape: wb init [structure_json] | wb write <structure_json> drafts <drafts_dir> [first]")
+    die(
+        "valid shape: wb init [structure_json] | wb list | wb tui | "
+        "wb write <structure_json> drafts <drafts_dir> [first]"
+    )
     return 2
 
 

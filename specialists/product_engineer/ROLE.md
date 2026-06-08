@@ -44,6 +44,7 @@ repo-local operating constraints.
   - `wb write <structure_json> drafts <drafts_dir> [first]`
   - `wb export <structure_json> drafts <drafts_dir> [all] [to <output_md>]`
   - `wb list`
+  - `wb tui`
   - `wb config`
 - Preserve named presets through the declarative preset surface:
   - `wb preset save "an eye for an eye" structure <structure_json> drafts <drafts_dir>`

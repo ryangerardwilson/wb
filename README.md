@@ -38,6 +38,7 @@ source ~/.bashrc
 wb help
 wb version
 wb list
+wb tui
 wb upgrade
 ```
 
@@ -60,6 +61,7 @@ Save a named preset and inspect progress from any directory:
 ```bash
 wb preset save "an eye for an eye" structure /path/to/structure.json drafts /path/to/drafts
 wb list
+wb tui
 wb use "an eye for an eye"
 wb use "an eye for an eye" status
 wb use "an eye for an eye" list
