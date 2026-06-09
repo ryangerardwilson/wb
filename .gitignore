@@ -5,5 +5,7 @@ __pycache__/
 dist/
 build/
 *.spec
+writenow
+coverage.out
 drafts/
 manuscript.md

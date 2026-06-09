@@ -1,85 +1,115 @@
-# wb
+# writenow
 
-Writer's Block is a terminal-native drafting tool for writing long work one
-proposition at a time.
+WriteNow is a terminal-native drafting tool for writing long work one proposition
+at a time.
 
 The app is generic. It does not ship with any book plan, manuscript, or private
 writing material.
 
-A proposition is complete when the draft body below the `wb` marker reaches the
-configured minimum character count.
+A proposition is complete when the draft body below the `writenow` marker
+reaches the configured minimum character count. Legacy `wb` draft markers are
+still read so existing drafts survive the rename.
 
 ## Install
 
-```bash
-./install.sh
-```
-
-Or install from GitHub:
-
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/ryangerardwilson/wb/main/install.sh | bash
+writenow version
 ```
 
-The installer keeps the internal runtime under `~/.wb/` and publishes the
-user-facing command at `~/.local/bin/wb`.
+The installer keeps the internal runtime under `~/.writenow/bin/writenow` and
+publishes the user-facing command at `~/.local/bin/writenow`.
 
 If `~/.local/bin` is not already on your `PATH`, add it once to `~/.bashrc` and
 reload:
 
-```bash
+```sh
 export PATH="$HOME/.local/bin:$PATH"
 source ~/.bashrc
 ```
 
+## Run From Source
+
+```sh
+go run ./cmd/writenow
+go run ./cmd/writenow help
+```
+
+## Install From Source
+
+```sh
+./install.sh from .
+writenow version
+```
+
 ## Usage
 
-```bash
-wb help
-wb version
-wb list
-wb tui
-wb upgrade
+```sh
+writenow help
+writenow version
+writenow list
+writenow start 1
+writenow start
+writenow tui
+writenow upgrade
 ```
 
 Create a generic book structure file:
 
-```bash
-wb init
-wb init ./structure.json
+```sh
+writenow init
+writenow init ./structure.json
 ```
 
 Write the next proposition with explicit paths:
 
-```bash
-wb write ./structure.json drafts ./drafts
-wb write ./structure.json drafts ./drafts first
+```sh
+writenow write ./structure.json drafts ./drafts
+writenow write ./structure.json drafts ./drafts first
 ```
 
-Save a named preset and inspect progress from any directory:
+Save a book and inspect progress from any directory:
 
-```bash
-wb preset save "an eye for an eye" structure /path/to/structure.json drafts /path/to/drafts
-wb list
-wb tui
-wb use "an eye for an eye"
-wb use "an eye for an eye" status
-wb use "an eye for an eye" list
-wb use "an eye for an eye" show
+```sh
+writenow preset save "an eye for an eye" structure /path/to/structure.json drafts /path/to/drafts
+writenow list
+```
+
+Start writing from the numbered book list:
+
+```sh
+writenow start 1
+writenow start
+```
+
+Browse saved books in the TUI:
+
+```sh
+writenow tui
+```
+
+TUI keys:
+
+```text
+enter          select book
+e              edit the current draft in vim
+n/p            next or previous proposition
+j/k or arrows  scroll
+b              back to books
+q              quit
 ```
 
 Export completed draft bodies:
 
-```bash
-wb export ./structure.json drafts ./drafts to manuscript.md
-wb export ./structure.json drafts ./drafts all
-wb use "an eye for an eye" export to manuscript.md
+```sh
+writenow export ./structure.json drafts ./drafts to manuscript.md
+writenow export ./structure.json drafts ./drafts all
 ```
 
 Edit the app config directly:
 
-```bash
-wb config
+```sh
+writenow config
 ```
 
 ## Config
@@ -87,9 +117,13 @@ wb config
 App config is XDG compliant:
 
 ```text
-$XDG_CONFIG_HOME/wb/config.json
-~/.config/wb/config.json
+$XDG_CONFIG_HOME/writenow/config.json
+~/.config/writenow/config.json
 ```
+
+On first read, `writenow` migrates an existing
+`$XDG_CONFIG_HOME/wb/config.json` or `~/.config/wb/config.json` into the new
+config path when the new file does not exist.
 
 The app config stores generic defaults and named presets:
 
@@ -136,17 +170,18 @@ Editor resolution follows the workspace contract:
 2. `$EDITOR`
 3. `vim`
 
-When `wb` launches Vim or Neovim, it sets prose wrapping at `79` characters with
-a `79` column marker. Draft files keep that as a plain comment rather than a
-Vim option string.
+When `writenow` launches Vim or Neovim, it sets prose wrapping at `79`
+characters with a `79` column marker. Draft files keep that as a plain comment
+rather than a Vim option string.
 
 ## Release
 
 This repo follows the workspace CLI contract:
 
-```bash
+```sh
 ./push_release_upgrade.sh
 ```
 
-That script pushes the current branch, tags the next release, waits for the
-GitHub release asset, and upgrades the installed app.
+That script pushes the current branch, tags the next release, publishes the
+GitHub release asset, and upgrades the installed app. Release artifacts are
+Linux x64 tarballs named `writenow-linux-x64.tar.gz`.

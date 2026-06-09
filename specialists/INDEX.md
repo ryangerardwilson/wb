@@ -1,6 +1,6 @@
-# wb Specialists Index
+# writenow Specialists Index
 
-Project: wb
+Project: writenow
 
 ## Purpose
 
