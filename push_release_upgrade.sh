@@ -137,7 +137,7 @@ main() {
 
   local tmp_dir
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/${APP}_release_XXXXXX")"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  trap 'rm -rf "${tmp_dir:-}"' EXIT
 
   info "Building ${ASSET_NAME}..."
   build_release_asset "$version" "$tmp_dir"
