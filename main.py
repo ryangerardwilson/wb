@@ -27,6 +27,7 @@ ANSI_RESET = "\033[0m"
 TUI_PAIR_NORMAL = 1
 TUI_PAIR_MUTED = 2
 TUI_PAIR_STRONG = 3
+TUI_PAIR_SELECTED = 4
 INSTALL_SCRIPT = (
     Path(sys.executable).resolve().parent / "install.sh"
     if getattr(sys, "frozen", False)
@@ -824,15 +825,17 @@ def setup_tui_screen(stdscr: Any, curses_module: Any) -> dict[str, int]:
 
     try:
         curses_module.start_color()
+        curses_module.use_default_colors()
         if curses_module.has_colors():
-            curses_module.init_pair(TUI_PAIR_NORMAL, curses_module.COLOR_WHITE, curses_module.COLOR_BLACK)
-            curses_module.init_pair(TUI_PAIR_MUTED, curses_module.COLOR_WHITE, curses_module.COLOR_BLACK)
-            curses_module.init_pair(TUI_PAIR_STRONG, curses_module.COLOR_WHITE, curses_module.COLOR_BLACK)
+            curses_module.init_pair(TUI_PAIR_NORMAL, curses_module.COLOR_WHITE, -1)
+            curses_module.init_pair(TUI_PAIR_MUTED, curses_module.COLOR_WHITE, -1)
+            curses_module.init_pair(TUI_PAIR_STRONG, curses_module.COLOR_WHITE, -1)
+            curses_module.init_pair(TUI_PAIR_SELECTED, curses_module.COLOR_CYAN, -1)
             attrs = {
                 "normal": curses_module.color_pair(TUI_PAIR_NORMAL),
                 "muted": curses_module.color_pair(TUI_PAIR_MUTED) | getattr(curses_module, "A_DIM", 0),
                 "strong": curses_module.color_pair(TUI_PAIR_STRONG) | getattr(curses_module, "A_BOLD", 0),
-                "selected": curses_module.color_pair(TUI_PAIR_STRONG) | getattr(curses_module, "A_BOLD", 0),
+                "selected": curses_module.color_pair(TUI_PAIR_SELECTED) | getattr(curses_module, "A_BOLD", 0),
             }
             stdscr.bkgd(" ", attrs["normal"])
     except Exception:
@@ -1044,6 +1047,9 @@ def dispatch(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.environ.setdefault("ESCDELAY", "25")
+    os.environ.setdefault("TERM", "xterm-256color")
+
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args == ["help"]:
         print_help()

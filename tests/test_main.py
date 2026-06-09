@@ -275,7 +275,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(preset_result.returncode, 0)
         self.assertEqual(result, 0)
 
-    def test_tui_setup_uses_black_background_without_reverse_video(self) -> None:
+    def test_tui_setup_uses_default_background_without_reverse_video(self) -> None:
         class FakeScreen:
             def __init__(self) -> None:
                 self.background = None
@@ -284,6 +284,7 @@ class MainTests(unittest.TestCase):
                 self.background = (char, attr)
 
         class FakeCurses:
+            COLOR_CYAN = 6
             COLOR_WHITE = 7
             COLOR_BLACK = 0
             A_DIM = 0x10
@@ -299,6 +300,9 @@ class MainTests(unittest.TestCase):
             def start_color(self) -> None:
                 self.started = True
 
+            def use_default_colors(self) -> None:
+                self.default_colors = True
+
             def has_colors(self) -> bool:
                 return True
 
@@ -313,7 +317,9 @@ class MainTests(unittest.TestCase):
 
         attrs = wb_main.setup_tui_screen(screen, fake_curses)
 
-        self.assertEqual(fake_curses.pairs[0], (wb_main.TUI_PAIR_NORMAL, fake_curses.COLOR_WHITE, fake_curses.COLOR_BLACK))
+        self.assertTrue(fake_curses.default_colors)
+        self.assertEqual(fake_curses.pairs[0], (wb_main.TUI_PAIR_NORMAL, fake_curses.COLOR_WHITE, -1))
+        self.assertEqual(fake_curses.pairs[-1], (wb_main.TUI_PAIR_SELECTED, fake_curses.COLOR_CYAN, -1))
         self.assertEqual(screen.background, (" ", attrs["normal"]))
         self.assertEqual(attrs["selected"] & fake_curses.A_REVERSE, 0)
         self.assertTrue(attrs["selected"] & fake_curses.A_BOLD)
